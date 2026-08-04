@@ -46,15 +46,39 @@ pub fn upsert_note_by_id(note: &StoredNote, wallet: &str, id: &str) -> Result<()
     sdk::store_put(&note_key(wallet, id), &bytes, true).map_err(|e| e.message())
 }
 
+/// Read a value from the **secrets** store namespace.
+///
+/// `petal::sdk::store_get` hardcodes the `state` namespace
+/// (`namespace_for_key(_, false)` at every rev we pin), which makes anything
+/// written with `secret = true` permanently unreadable through the stock SDK
+/// read API. Notes are written with `secret = true` (see `store_note_by_id` /
+/// `persist_update`), so the read must target the `secrets` namespace directly
+/// via the underlying host binding. The namespace string matches the SDK's own
+/// private `SECRET_NS` constant and the on-disk layout under
+/// `~/.bloom/petals/data/<hash>/secrets/...`.
+fn read_secret(key: &str, max_bytes: usize) -> Result<Option<Vec<u8>>, String> {
+    let Some(bytes) = petal::bindings::bloom::store::kv::get("secrets", key)
+        .map_err(|e| format!("store get: {e}"))?
+    else {
+        return Ok(None);
+    };
+    if bytes.len() > max_bytes {
+        return Err(format!(
+            "value is {} bytes, exceeds max {max_bytes}",
+            bytes.len()
+        ));
+    }
+    Ok(Some(bytes))
+}
+
 pub fn load_note(wallet: &str, id: &str) -> Result<Option<StoredNote>, String> {
-    match sdk::store_get(&note_key(wallet, id), MAX_NOTE_BYTES) {
-        Ok(bytes) => {
+    match read_secret(&note_key(wallet, id), MAX_NOTE_BYTES)? {
+        Some(bytes) => {
             let note: StoredNote =
                 serde_json::from_slice(&bytes).map_err(|e| format!("note parse: {e}"))?;
             Ok(Some(note))
         }
-        Err(petal::SdkError::Host(petal::HostStatus::NotFound)) => Ok(None),
-        Err(e) => Err(e.message()),
+        None => Ok(None),
     }
 }
 
