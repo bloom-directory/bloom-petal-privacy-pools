@@ -90,9 +90,12 @@ Never run a live-money deposit without explicit authorization.
 
 ## Integration smoke-test notes
 
-`CHAIN = "ethereum"` is the identifier passed to `bloom:chain` reads and the tx
-outbox. If the host resolves mainnet Ethereum under a different canonical name,
-adjust the single constant in `route/src/protocol.rs`. The `tx_inspect` receipt
-is expected to carry a standard `logs` array; if the host shape differs, the
-deposit still stages and settles, but `label`/`value`/`commitment` will not be
-auto-filled until the parser is aligned.
+`CHAIN = "mainnet"` is the identifier passed to `bloom:chain` reads and the tx
+outbox. This matches the bloom host's canonical mainnet key (verified against
+the live host: `/chains/ethereum/...` returns "chain 'ethereum' not found",
+`/chains/mainnet/head/number` works). If a different host deployment resolves
+mainnet Ethereum under another key, adjust the single constant in
+`route/src/protocol.rs`. The `tx_inspect` receipt is expected to carry a
+standard `logs` array; if the host shape differs, the deposit still stages and
+settles, but `label`/`value`/`commitment` will not be auto-filled until the
+parser is aligned.
