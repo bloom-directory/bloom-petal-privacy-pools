@@ -7,6 +7,7 @@ proofs and an Association Set Provider (ASP).
 
 - **Entrypoint (proxy):** `0x6818809eefce719e480a7526d76bd3e561526b46`
 - **PrivacyPool (ETH):** `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb`
+- **Chain:** Ethereum mainnet
 
 ## What this petal does
 
@@ -25,73 +26,149 @@ The BN254 Poseidon hash and the LeanIMT are ported from `circomlibjs` and
 `@zk-kit/lean-imt` respectively, and are validated against their published test
 vectors and an upstream oracle.
 
+## Supported assets
+
+| Asset | Symbol | Decimals | Pool Address |
+|-------|--------|----------|-------------|
+| Native ETH | ETH | 18 | `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb` |
+
+ERC-20 deposits are not supported in this release.
+
+## Route table
+
+| Route | Method | Purpose |
+|-------|--------|---------|
+| `status.json` | GET | Petal health + self-documenting capability summary |
+| `protocol.json` | GET | Mainnet constants, addresses, hashing scheme |
+| `pool/config.json` | GET | Live pool config (minimum deposit, fees) |
+| `pool/state.json` | GET | Live pool state (tree size, ASP root, scope) |
+| `deposits/<wallet>/<id>.json` | GET | Read deposit status (reconciles on-chain) |
+| `deposits/<wallet>/<id>.json` | WRITE | Stage a new ETH deposit |
+| `notes/<wallet>/<id>.json` | GET | Public note view (no secrets) |
+| `withdrawals/<wallet>/<id>.json` | GET | Withdrawal proof-input preparation |
+
+Directory listings (`deposits/`, `notes/`, `withdrawals/` and their
+`<wallet>/` children) return empty — an agent must know exact `<wallet>` and
+`<id>` values. This is a known gap (no `store_list` in the SDK); see AGENTS.md
+for workaround.
+
+## Deposit write body
+
+```json
+{
+  "amount_wei": "1000000000000000000",
+  "asset": "eth"
+}
+```
+
+- **`amount_wei`** (required): decimal wei amount. Becomes `msg.value`. Must be
+  ≥ the pool's minimum deposit (check `pool/config.json` first).
+- **`asset`** (optional): only `"eth"` is supported. Omitting it defaults to ETH.
+
+`<wallet>` is a Bloom wallet alias. `<id>` is a caller-chosen durable
+idempotency key (e.g. `"deposit-001"`).
+
+### Example
+
+```sh
+bloom vfs write \
+  /petals/privacy-pools/deposits/my-wallet/deposit-001.json \
+  --data '{ "amount_wei": "1000000000000000000" }'
+```
+
+## Transaction lifecycle
+
+```
+                WRITE
+                  │
+                  ▼
+             ┌─────────┐
+             │ staging │ ← placeholder persisted, tx outbox call in flight
+             └────┬────┘
+                  │ tx_stage succeeds
+                  ▼
+             ┌─────────┐
+             │  staged │ ← tx in outbox, awaiting owner approval + mining
+             └────┬────┘
+                  │ tx mined, Deposited log parsed
+                  ▼
+            ┌──────────┐
+            │ confirmed│ ← label, value, commitment filled
+            └──────────┘
+
+    Error branches:
+    staging ──(tx_stage fails)──▶ stage-failed ← retryable with same id
+    staged  ──(tx reverted)────▶ failed
+```
+
+A WRITE means the deposit was **staged**, not settled. Only a later GET
+returning `status: "confirmed"` means it settled.
+
+### Idempotency contract
+
+- Same `<id>` + same `amount_wei` + `"staged"`/`"confirmed"` status → returns
+  the existing deposit (safe retry).
+- Same `<id>` + same `amount_wei` + `"stage-failed"` status → retries the
+  deposit.
+- Same `<id>` + different `amount_wei` → error `-3` (conflict, use new id).
+- Same `<id>` + `"staging"` status → error `-3` (incomplete, inspect outbox).
+
+## Deposit status fields (GET response)
+
+| Field | Type | Present when | Description |
+|-------|------|-------------|-------------|
+| `status` | string | always | `staging` / `staged` / `confirmed` / `failed` / `stage-failed` |
+| `amount_wei` | string | always | Decimal wei sent |
+| `precommitment` | string | always | `0x`-hex poseidon([nullifier, secret]) |
+| `tx` | object | always | `{ chain, outbox_id, tx_hash? }` |
+| `value` | string | confirmed | Decimal wei committed (post vetting-fee) |
+| `label` | string | confirmed | `0x`-hex keccak256(scope, nonce) |
+| `commitment` | string | confirmed | `0x`-hex poseidon([value, label, precommitment]) |
+| `spent` | bool | always | Whether this note was withdrawn (always false in-petal) |
+| `approval_action_id` | string | staged | Owner-approval action ID |
+| `approval_ceremony_url` | string | staged | URL for the approval ceremony |
+| `approval_expires_ms` | number | staged | Expiry timestamp |
+
 ## Withdrawal proving boundary
 
 Generating the withdrawal Groth16 proof needs the circuit wasm + a trusted-setup
 zkey, runs for seconds, and must happen locally for privacy. That step stays
-**out of the petal** (matching the official TypeScript SDK + relayer split). Use
-`withdrawals/<wallet>/<id>.json` to get the prepared input, then prove and
-submit with `snarkjs` / the official SDK.
+**out of the petal** (matching the official TypeScript SDK + relayer split).
 
-## Canonical route
+`withdrawals/<wallet>/<id>.json` returns everything an external prover needs:
 
-```text
-/petals/privacy-pools/deposits/<wallet-alias>/<id>.json
-```
+- Note's public commitment, label, value, nullifier hash (precommitment)
+- Example withdrawal context hash (with zero-address recipient — caller
+  recomputes with the real recipient)
+- Current ASP root and state tree size (best-effort live reads)
+- Full witness schema: public inputs, private signals, Merkle proof slots
 
-Stage an ETH deposit:
+The Merkle proof fields (`stateSiblings`, `stateIndex`, `ASPSiblings`,
+`ASPIndex`) are `null` — generating them requires syncing the pool's
+`Deposited` events into a LeanIMT and querying the ASP set, which belongs in a
+data service, not a route handler. The response includes instructions for
+filling these fields.
 
-```sh
-bloom vfs write \
-  /petals/privacy-pools/deposits/<wallet>/<id>.json \
-  --data '{ "amount_wei": "1000000000000000000" }'
-```
+## Secrets boundary
 
-Read status (reconciles on-chain after mining):
-
-```sh
-bloom vfs cat /petals/privacy-pools/deposits/<wallet>/<id>.json
-```
-
-Public note view (no secrets):
-
-```sh
-bloom vfs cat /petals/privacy-pools/notes/<wallet>/<id>.json
-```
-
-Pool config and state:
-
-```sh
-bloom vfs cat /petals/privacy-pools/pool/config.json
-bloom vfs cat /petals/privacy-pools/pool/state.json
-```
-
-A write only means the deposit was staged; only a later read returning
-`status: "confirmed"` means it settled.
-
-## Other routes
-
-- `status.json` — petal health and capability summary.
-- `protocol.json` — mainnet constants and hashing scheme.
-- `pool/config.json`, `pool/state.json` — live pool reads via `bloom:chain`.
-- `withdrawals/<wallet>/<id>.json` — withdrawal proof-input preparation.
+`nullifier` and `secret` are the only thing that lets the owner later withdraw.
+They are persisted in the **secrets** store namespace and are **never** returned
+by any read route. Public surfaces expose only `commitment`, `label`, `value`,
+`precommitment`, `status`, and `spent`.
 
 ## Capabilities
 
-`bloom:store`, `bloom:tx.outbox`, `bloom:chain`. No raw HTTP, no signing
-intents, no network allowlist.
+`bloom:store`, `bloom:tx.outbox`, `bloom:chain`. No raw HTTP (`bloom:http`),
+no signing intents (`bloom:sign`), no network allowlist (`net.allow`).
 
 ## Development
 
 ```sh
+cargo fmt --manifest-path route/Cargo.toml --check
 cargo test --manifest-path route/Cargo.toml --locked
 cargo clippy --manifest-path route/Cargo.toml --locked --all-targets -- -D warnings
-scripts/build.sh     # petal build --root .
-petal check --root .
+scripts/build.sh                      # petal build --root .
+scripts/check-route-architecture.sh   # source-level architecture check
 ```
-
-Regenerating the Poseidon constants is not part of normal development; they are
-checked in (`route/src/poseidon_constants.rs`) and were produced from
-`circomlibjs/src/poseidon_constants.js`.
 
 Do not run a live-money deposit without explicit authorization.
