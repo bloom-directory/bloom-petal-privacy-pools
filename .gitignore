@@ -1,0 +1,5 @@
+/target
+**/target
+petal/
+!petal/.gitkeep
+*.wasm

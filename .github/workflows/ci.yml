@@ -1,0 +1,67 @@
+name: ci
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PETAL_REV: b9fc22d6d8211bc41304b38b1ef8b5269c8035bd
+
+jobs:
+  rust:
+    name: fmt · test · clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: route
+
+      - name: cargo fmt
+        run: cargo fmt --manifest-path route/Cargo.toml --check
+
+      - name: cargo test
+        run: cargo test --manifest-path route/Cargo.toml --locked
+
+      - name: cargo clippy
+        run: cargo clippy --manifest-path route/Cargo.toml --locked --all-targets -- -D warnings
+
+  build:
+    name: petal build · check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: route
+
+      - name: Install petal CLI
+        run: |
+          cargo install \
+            --git https://github.com/bloom-directory/petal \
+            --rev "$PETAL_REV" \
+            --locked \
+            --root "$HOME/.petal-tool" \
+            bloom-petal-cli
+          echo "$HOME/.petal-tool/bin" >> "$GITHUB_PATH"
+
+      - name: petal build
+        run: scripts/build.sh
+
+      - name: petal check
+        run: petal check --root .

@@ -1,0 +1,12 @@
+schema = "bloom.petal.package.v1"
+name = "privacy-pools"
+
+[consent]
+summary = "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet, manage private deposit notes, read pool state, and prepare withdrawal proof inputs. Withdrawal Groth16 proving stays out-of-petal (snarkjs)."
+
+[caps]
+allowed = ["bloom:store", "bloom:tx.outbox", "bloom:chain"]
+
+[store]
+namespaces = ["state"]
+secret_namespaces = ["secrets"]
