@@ -3,7 +3,7 @@
 # Usage: GH_TOKEN=<token> VERSION=0.1.0 bash scripts/create-release.sh
 set -euo pipefail
 
-REPO="0xdewy/bloom-petal-privacy-pools"
+REPO="bloom-directory/bloom-petal-privacy-pools"
 VERSION="${VERSION:-0.1.0}"
 TAG="v${VERSION}"
 STAGING="${STAGING:-/tmp/privacy-pools-release}"
