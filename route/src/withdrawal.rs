@@ -117,16 +117,16 @@ pub fn prepare(wallet: &str, id: &str) -> DispatchResponse {
             "nullifier_hash": nullifier_hash,
         },
         "roots": {
-            "asp_root": asp_root.map(|r| format!("0x{:x}", r)),
+            "asp_root": asp_root.map(|r| format!("0x{r:x}")),
             "state_tree_size": tree_size.map(|s| s.to_string()),
-            "scope": scope.map(|s| format!("0x{:x}", s)),
+            "scope": scope.map(|s| format!("0x{s:x}")),
         },
         "withdrawal_proof_input": {
             "public_signals": {
                 "withdrawnValue": value,
                 "stateRoot": null,            // fill from synced state tree root
                 "stateTreeDepth": null,
-                "ASPRoot": asp_root.map(|r| format!("0x{:x}", r)),
+                "ASPRoot": asp_root.map(|r| format!("0x{r:x}")),
                 "ASPTreeDepth": null,
                 "context": example_context,
             },

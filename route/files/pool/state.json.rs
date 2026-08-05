@@ -6,12 +6,18 @@ petal::route_file!(
         let asp = crate::chain::latest_asp_root();
         let scope = crate::chain::pool_scope(pool);
         match (size, asp) {
-            (Ok(size), Ok(asp)) => petal::read_json_value(&serde_json::json!({
-                "pool": format!("{pool:?}"),
-                "state_tree_size": size.to_string(),
-                "asp_root": format!("0x{asp:x}"),
-                "scope": scope.as_ref().map(|s| format!("0x{s:x}")).unwrap_or_default(),
-            })),
+            (Ok(size), Ok(asp)) => {
+                let scope_json = match &scope {
+                    Ok(s) => serde_json::Value::String(format!("0x{s:x}")),
+                    Err(e) => serde_json::json!({ "error": e }),
+                };
+                petal::read_json_value(&serde_json::json!({
+                    "pool": format!("{pool:?}"),
+                    "state_tree_size": size.to_string(),
+                    "asp_root": format!("0x{asp:x}"),
+                    "scope": scope_json,
+                }))
+            }
             (Err(e), _) | (_, Err(e)) => petal::error(-4, format!("could not read pool state: {e}")),
         }
     }

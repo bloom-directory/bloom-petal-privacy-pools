@@ -20,11 +20,13 @@ pub const FIELD_P: U256 = U256::from_limbs([
 /// Reduce a `U256` into the BN254 scalar field. `U256` values are already in
 /// `[0, 2^256)`, so a single modular reduction is sufficient.
 #[inline]
+#[must_use]
 pub fn reduce(a: U256) -> U256 {
     a % FIELD_P
 }
 
 /// Parse a hex field element (with or without `0x`) and reduce it.
+#[must_use]
 pub fn from_hex(s: &str) -> Option<U256> {
     let s = s.strip_prefix("0x").unwrap_or(s);
     if s.is_empty() || s.bytes().any(|b| !b.is_ascii_hexdigit()) {
@@ -35,18 +37,21 @@ pub fn from_hex(s: &str) -> Option<U256> {
 
 /// Field addition.
 #[inline]
+#[must_use]
 pub fn add(a: U256, b: U256) -> U256 {
     a.add_mod(b, FIELD_P)
 }
 
 /// Field multiplication.
 #[inline]
+#[must_use]
 pub fn mul(a: U256, b: U256) -> U256 {
     a.mul_mod(b, FIELD_P)
 }
 
 /// `x^5 mod p`, the Poseidon S-box.
 #[inline]
+#[must_use]
 pub fn pow5(x: U256) -> U256 {
     let x2 = mul(x, x);
     let x4 = mul(x2, x2);

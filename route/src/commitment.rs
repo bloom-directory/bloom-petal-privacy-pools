@@ -20,6 +20,7 @@ use crate::poseidon::{hash2, hash3};
 
 /// `keccak256` of the big-endian 32-byte words, reduced into the BN254 scalar
 /// field. Matches `snarkHash()` / Solidity `keccak256(...) % p` usage.
+#[must_use]
 pub fn keccak_words(words: &[U256]) -> U256 {
     let mut hasher = Keccak256::new();
     for word in words {
@@ -32,6 +33,7 @@ pub fn keccak_words(words: &[U256]) -> U256 {
 }
 
 /// `label = keccak256(abi.encode(scope, nonce)) % p`.
+#[must_use]
 pub fn label(scope: U256, nonce: U256) -> U256 {
     keccak_words(&[scope, nonce])
 }
@@ -39,12 +41,14 @@ pub fn label(scope: U256, nonce: U256) -> U256 {
 /// `precommitmentHash = poseidon([nullifier, secret])`. This is the value passed
 /// to `Entrypoint.deposit(precommitment)` and is also the nullifier that gets
 /// spent on withdrawal.
+#[must_use]
 pub fn precommitment_hash(nullifier: U256, secret: U256) -> U256 {
     hash2(nullifier, secret)
 }
 
 /// `commitmentHash = poseidon([value, label, precommitment])`. This is the leaf
 /// inserted into the pool's state LeanIMT and emitted as `_commitment`.
+#[must_use]
 pub fn commitment_hash(value: U256, label: U256, precommitment: U256) -> U256 {
     hash3(value, label, precommitment)
 }
