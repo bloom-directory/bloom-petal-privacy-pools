@@ -38,6 +38,9 @@ jobs:
       - name: cargo clippy
         run: cargo clippy --manifest-path route/Cargo.toml --locked --all-targets -- -D warnings
 
+      - name: route architecture
+        run: scripts/check-route-architecture.sh
+
   build:
     name: petal build · check
     runs-on: ubuntu-latest
@@ -49,6 +52,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: route
+
+      - name: Install wasm-tools
+        run: cargo install wasm-tools --version 1.254.0 --locked
 
       - name: Install petal CLI
         run: |
@@ -65,3 +71,6 @@ jobs:
 
       - name: petal check
         run: petal check --root .
+
+      - name: petal package
+        run: petal package --root . --out "$RUNNER_TEMP/privacy-pools-ci.petal.tar.gz"
