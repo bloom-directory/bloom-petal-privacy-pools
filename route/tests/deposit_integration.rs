@@ -55,7 +55,7 @@ fn single_log_receipt(log: &serde_json::Value) -> String {
 /// 0xBOW contracts must parse with the petal's fixed layout, and the parsed
 /// commitment must equal the petal's own `commitment_hash(value, label, pre)`
 /// (cross-checking the parser, the hash3 port, and the ABI against on-chain
-/// PoseidonT4). The emitted value must equal `msg.value − vetting fee`.
+/// `PoseidonT4`). The emitted value must equal `msg.value − vetting fee`.
 #[test]
 fn real_deposits_parse_and_match_commitment_math() {
     if !fixtures_present() {
@@ -108,7 +108,7 @@ fn real_deposits_parse_and_match_commitment_math() {
 }
 
 /// p4 (tamper): mutating one byte of the commitment in the real receipt's
-/// `data` makes the integrity check fail (commitment_hash no longer matches).
+/// `data` makes the integrity check fail (`commitment_hash` no longer matches).
 #[test]
 fn real_receipt_tampered_commitment_is_rejected() {
     if !fixtures_present() {

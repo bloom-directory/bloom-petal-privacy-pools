@@ -50,6 +50,7 @@ impl LeanImt {
         }
     }
 
+    #[must_use]
     pub fn from_leaves(leaves: &[U256]) -> Self {
         let mut tree = Self::new();
         for &leaf in leaves {
@@ -59,18 +60,22 @@ impl LeanImt {
     }
 
     /// Tree depth = number of levels - 1.
+    #[must_use]
     pub fn depth(&self) -> usize {
         self.nodes.len() - 1
     }
 
+    #[must_use]
     pub fn size(&self) -> usize {
         self.nodes[0].len()
     }
 
+    #[must_use]
     pub fn leaves(&self) -> Vec<U256> {
         self.nodes[0].iter().copied().flatten().collect()
     }
 
+    #[must_use]
     pub fn root(&self) -> Option<U256> {
         let top = self.nodes.last()?;
         top.first().copied().flatten()
@@ -107,6 +112,7 @@ impl LeanImt {
         self.nodes[depth] = vec![Some(node)];
     }
 
+    #[must_use]
     pub fn index_of(&self, leaf: U256) -> Option<usize> {
         self.nodes[0].iter().position(|slot| slot == &Some(leaf))
     }
@@ -146,6 +152,7 @@ impl LeanImt {
 
 /// Verify a LeanIMT proof with the canonical node hash. Mirrors
 /// `LeanIMT.verifyProof`.
+#[must_use]
 pub fn verify_proof(proof: &LeanImtProof) -> bool {
     let LeanImtProof {
         root,
