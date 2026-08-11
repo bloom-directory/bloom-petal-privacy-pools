@@ -16,9 +16,7 @@ pub fn deposit(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
 
     let note = match crate::notes::load_note(wallet, id) {
         Ok(Some(n)) => n,
-        Ok(None) => {
-            return petal::error(-4, "deposit staging did not complete")
-        }
+        Ok(None) => return petal::error(-4, "deposit staging did not complete"),
         Err(e) => return petal::error(-4, format!("internal error: {e}")),
     };
 
@@ -31,9 +29,7 @@ pub fn deposit(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         );
     }
 
-    if !note.tx.outbox_id.is_empty()
-        && (note.status == "staged" || note.status == "pending")
-    {
+    if !note.tx.outbox_id.is_empty() && (note.status == "staged" || note.status == "pending") {
         let _ = sdk::tx_confirm(wallet, &note.tx.chain, &note.tx.outbox_id, true);
     }
 
@@ -42,7 +38,11 @@ pub fn deposit(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         "id": id
     });
     let key = format!("state/private/{wallet}/{id}.json");
-    let _ = sdk::store_put(&key, &serde_json::to_vec(&status).unwrap_or_default(), false);
+    let _ = sdk::store_put(
+        &key,
+        &serde_json::to_vec(&status).unwrap_or_default(),
+        false,
+    );
 
     DispatchResponse::Write
 }
@@ -51,9 +51,10 @@ pub fn read(wallet: &str, id: &str) -> DispatchResponse {
     let key = format!("state/private/{wallet}/{id}.json");
     petal::sdk::store_get(&key, 1024)
         .map(|data| {
-            petal::read_json_value(&crate::serde_json::from_slice(&data).unwrap_or_else(|_| {
-                crate::serde_json::json!({"status": "not_started"})
-            }))
+            petal::read_json_value(
+                &crate::serde_json::from_slice(&data)
+                    .unwrap_or_else(|_| crate::serde_json::json!({"status": "not_started"})),
+            )
         })
         .unwrap_or_else(|_| {
             petal::read_json_value(&crate::serde_json::json!({"status": "not_started"}))

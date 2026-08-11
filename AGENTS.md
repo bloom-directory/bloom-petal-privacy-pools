@@ -1,5 +1,43 @@
 # Privacy Pools Petal — operating contract
 
+> ## ⚠️ CRITICAL SAFETY — READ BEFORE OPERATING
+>
+> **Deposit notes (nullifier + secret) are the ONLY way to withdraw.** If they
+> are lost, the deposited ETH is **permanently locked** — no recovery path.
+>
+> ### Mandatory rules for any agent or operator:
+>
+> 1. **Test the full cycle first.** Deposit → prepare withdrawal → generate
+>    proof → withdraw → verify ETH arrived. Use the **minimum deposit amount**
+>    (check `pool/config.json`). Never deposit more than the minimum until
+>    withdrawal is proven end-to-end.
+>
+> 2. **Back up the note immediately.** After each deposit, read
+>    `/petals/privacy-pools/recovery/<wallet>/<id>.json` and save the note
+>    offline. **Do NOT rely on the petal's store as the only copy.**
+>
+> 3. **NEVER reinstall this petal without backing up.** The petal's secret
+>    store is keyed by package hash. Reinstalling (new build, new version)
+>    **destroys all stored notes**. Run `bloom petals export-secrets
+>    privacy-pools` (or read all `/recovery/` routes) before any reinstall.
+>
+> 4. **One deposit at a time.** Stage, confirm on-chain, back up the note,
+>    and verify withdrawal preparation works BEFORE making another deposit.
+>
+> 5. **Minimum amounts only.** Never deposit more than the pool minimum
+>    (`pool/config.json` → `minimum_deposit_wei`) for testing. Real deposits
+>    are the user's explicit decision, not the agent's.
+>
+> ### What happened that led to these rules (lesson learned):
+>
+> During integration testing, two deposits (2 × 0.01 ETH) were made without
+> testing withdrawal. The petal was then reinstalled (to add a new route),
+> which replaced the secret store. Both notes were destroyed. The 0.02 ETH
+> (~$38) is permanently locked in the 0xBOW pool. This was entirely
+> preventable — the cycle should have been tested end-to-end with minimum
+> funds before scaling, and the store should have been backed up before
+> reinstalling.
+
 This petal integrates the deployed **0xBOW Privacy Pools** protocol on Ethereum
 mainnet. Entrypoint proxy `0x6818809eefce719e480a7526d76bd3e561526b46`; ETH pool
 `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb`.
@@ -38,7 +76,29 @@ as chat or shell-argument input.
 | `/petals/privacy-pools/pool/state.json` | Live pool state (tree size, ASP root, scope) | — |
 | `/petals/privacy-pools/deposits/<wallet>/<id>.json` | Read status (reconciles on-chain) | Stage ETH deposit |
 | `/petals/privacy-pools/notes/<wallet>/<id>.json` | Public note view (no secrets) | — |
+| `/petals/privacy-pools/recovery/<wallet>/<id>.json` | **Full note (nullifier + secret) for backup** | — |
 | `/petals/privacy-pools/withdrawals/<wallet>/<id>.json` | Readiness, direct settlement, or redacted private-relay status | Stage a direct withdrawal, or advance a private destination ceremony |
+| `/petals/privacy-pools/private/<wallet>/<id>.json` | Agent-blind deposit (returns only `{status, id}`) | Stage + auto-broadcast deposit |
+
+## Recovery route
+
+`/petals/privacy-pools/recovery/<wallet>/<id>.json` returns the **full note**
+including `nullifier` and `secret`. This is the only way to export the
+withdrawal proof. **Agents should NOT read this route** — it is for the
+human user to back up their note. After reading, save the output offline
+(file, paper, password manager). If the petal store is lost, this backup is
+the only way to recover deposited funds.
+
+## Private (agent-blind) route
+
+`/petals/privacy-pools/private/<wallet>/<id>.json` stages + auto-broadcasts a
+deposit internally, returning only `{status, id}`. The note stays in the
+petal's secret store — no addresses, precommitments, or tx details are
+surfaced. This lets an agent delegate deposits without seeing sensitive data.
+
+**Important:** the agent-blind route still stores the note in the petal's
+secret store. The same backup rules apply — read `/recovery/` after the
+deposit and save the note offline.
 
 ## State machine
 
@@ -72,7 +132,7 @@ as chat or shell-argument input.
 | `staging` | Placeholder persisted, stage call outcome uncertain | Wait, then re-read. If stuck, use a new `<id>` or ask operator to inspect outbox. |
 | `stage-failed` | Stage call definitively failed | Retry with same `<id>` + same `amount_wei`, or use a new `<id>`. |
 | `staged` | Tx accepted by outbox | Direct owner to `approval_ceremony_url` if approval required. Poll with GET to reconcile. |
-| `confirmed` | Tx mined and `Deposited` log parsed | Confirm that `value`, `label`, and `commitment` are all present, then apply every readiness gate in `WITHDRAWAL.md`. |
+| `confirmed` | Tx mined and `Deposited` log parsed | Confirm that `value`, `label`, and `commitment` are all present, **read `/recovery/<wallet>/<id>.json` and save the note offline**, then apply every readiness gate in `WITHDRAWAL.md` before preparing withdrawal via `withdrawals/<wallet>/<id>.json`. |
 | `failed` | Tx reverted | Terminal. Funds did not move. Use a new `<id>` to retry. |
 
 If a mined deposit lacks `value`, `label`, or `commitment`, classify it as
@@ -119,13 +179,23 @@ note's precommitment is checked against the emitted one.
 
 `nullifier` and `secret` are the only thing that lets the owner later withdraw.
 They are persisted in the **secrets** store namespace and are never returned by
-any read route. Public surfaces (`deposits/.../<id>.json`, `notes/.../<id>.json`)
-expose only `commitment`, `label`, `value`, `precommitment`, `status`, and
-`spent`.
+the `deposits/` or `notes/` routes. **The only route that exposes them is
+`/recovery/<wallet>/<id>.json`** — intended for one-time human backup. Public
+surfaces (`deposits/.../<id>.json`, `notes/.../<id>.json`) expose only
+`commitment`, `label`, `value`, `precommitment`, `status`, and `spent`.
 
 The precommitment is `Poseidon(nullifier, secret)`. The spent nullifier hash is
 `Poseidon(nullifier)`. They are not interchangeable. Reads derive the latter
 inside the petal and reconcile it against the pool without exposing it.
+
+### Why the note must be backed up externally
+
+The petal's secret store is keyed by the petal's **package hash**. When the
+petal is reinstalled (new build, version bump, hash change), the old store
+becomes inaccessible. Without an external backup (from the `/recovery/` route),
+the deposit is permanently locked. This is a known design limitation of the
+bloom petal store; future bloom versions should migrate stores across petal
+updates.
 
 ## Safety validation
 
@@ -169,6 +239,8 @@ transaction hash, or exact submission time. There is no `Entrypoint.withdraw`.
 The `deposits/`, `notes/`, and `withdrawals/` directory listings enumerate
 wallets and ids through `store_list` in the public state namespace. Never list
 or infer ids from the secret namespace.
+The `recovery/` and `private/` routes intentionally expose no directory
+listings — agents and clients must know exact `<wallet>` and `<id>` values.
 
 ## Capabilities
 
@@ -176,18 +248,6 @@ Declared in `petal.toml`: `bloom:store`, `bloom:tx.outbox`, `bloom:chain`,
 `bloom:vfs.read` for resolving a direct signing wallet, and
 `bloom:private-input` for the Privacy Pools-only recipient ceremony. No
 `bloom:http` or `bloom:sign`; the tx outbox owns direct owner approval.
-
-## Route/controller/module shape
-
-- `route/files/**/*.rs` are controllers: route params, list/read/write
-  selection, small responses. Each builds as one WASM component.
-- Domain code lives under `route/src/`: `field`, `poseidon`,
-  `poseidon_constants`, `commitment`, `lean_imt`, `protocol`, `chain`, `types`,
-  `notes`, `deposit`, `withdrawal`.
-- Use the canonical `petal` SDK helpers (`petal::param`, `petal::is_safe_segment`,
-  `petal::write_spec`, `petal::static_read_spec`, `petal::store_read_spec`).
-  `RouteSpec::file()`/`writable()`/`ttl()` are private — compose via the public
-  spec constructors and `.caps(...)`.
 
 ## Cryptographic provenance
 
@@ -217,7 +277,8 @@ scripts/check-route-architecture.sh   # source-level architecture check
 ```
 
 Do not commit generated `.wasm`, `target/`, or `petal/privacy-pools/` output.
-Never run a live-money deposit without explicit authorization.
+Never run a live-money deposit without explicit authorization and without
+testing the full deposit → withdrawal cycle with minimum funds first.
 
 ## Integration smoke-test notes
 
