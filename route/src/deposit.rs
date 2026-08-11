@@ -197,7 +197,6 @@ pub fn create(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         commitment: None,
         spent: false,
         approval_action_id: None,
-        approval_ceremony_url: None,
         approval_expires_ms: None,
     };
     let claim = if prior_was_failed {
@@ -238,7 +237,6 @@ pub fn create(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     note.status = "staged".to_string();
     note.tx.outbox_id = staged.outbox_id.clone();
     note.approval_action_id = staged.approval.as_ref().map(|a| a.action_id.clone());
-    note.approval_ceremony_url = staged.approval.as_ref().map(|a| a.ceremony_url.clone());
     note.approval_expires_ms = staged.approval.as_ref().map(|a| a.expires_ms);
 
     if let Err(e) = notes::persist_update(&note, wallet, id) {
@@ -490,7 +488,6 @@ mod tests {
             commitment: None,
             spent: false,
             approval_action_id: None,
-            approval_ceremony_url: None,
             approval_expires_ms: None,
         }
     }

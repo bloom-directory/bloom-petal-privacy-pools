@@ -55,8 +55,6 @@ pub struct StoredNote {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_action_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub approval_ceremony_url: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_expires_ms: Option<u64>,
 }
 
@@ -78,11 +76,9 @@ pub struct DepositStatus {
     pub commitment: Option<String>,
     #[serde(default)]
     pub spent: bool,
-    /// Owner-approval ceremony for the staged deposit, when Bloom requires one.
+    /// Owner-visible Bloom approval action for the staged deposit, when required.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_action_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub approval_ceremony_url: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub approval_expires_ms: Option<u64>,
 }
@@ -101,7 +97,6 @@ impl From<&StoredNote> for DepositStatus {
             commitment: n.commitment.clone(),
             spent: n.spent,
             approval_action_id: n.approval_action_id.clone(),
-            approval_ceremony_url: n.approval_ceremony_url.clone(),
             approval_expires_ms: n.approval_expires_ms,
         }
     }

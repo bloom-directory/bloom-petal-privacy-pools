@@ -51,7 +51,7 @@ copy WIT, SDK, or builder code.
 |--------|---------|-------------|
 | `staging` | Placeholder persisted, stage call outcome uncertain | Wait, then re-read. If stuck, use a new `<id>` or ask operator to inspect outbox. |
 | `stage-failed` | Stage call definitively failed | Retry with same `<id>` + same `amount_wei`, or use a new `<id>`. |
-| `staged` | Tx accepted by outbox | Direct owner to `approval_ceremony_url` if approval required. Poll with GET to reconcile. |
+| `staged` | Tx accepted by outbox | Direct the owner to Bloom's owner-visible approval status when `approval_action_id` is present. Poll with GET to reconcile. |
 | `confirmed` | Tx mined, `Deposited` log parsed | Deposit settled. Read `notes/<wallet>/<id>.json` for the public note. Prepare withdrawal via `withdrawals/<wallet>/<id>.json`. |
 | `failed` | Tx reverted | Terminal. Funds did not move. Use a new `<id>` to retry. |
 

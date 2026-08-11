@@ -126,8 +126,7 @@ returning `status: "confirmed"` means it settled.
 | `commitment` | string | confirmed | `0x`-hex poseidon([value, label, precommitment]) |
 | `spent` | bool | always | Whether this note was withdrawn (always false in-petal) |
 | `approval_action_id` | string | staged | Owner-approval action ID |
-| `approval_ceremony_url` | string | staged | URL for the approval ceremony |
-| `approval_expires_ms` | number | staged | Expiry timestamp |
+| `approval_expires_ms` | integer | staged | Expiry of the owner-visible Bloom approval action |
 
 ## Withdrawal proving boundary
 
