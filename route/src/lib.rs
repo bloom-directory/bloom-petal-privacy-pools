@@ -16,3 +16,5 @@ pub mod types;
 pub mod withdrawal;
 
 pub use serde_json;
+
+pub mod private;
