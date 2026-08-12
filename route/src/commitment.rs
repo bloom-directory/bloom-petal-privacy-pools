@@ -16,7 +16,7 @@ use alloy_primitives::U256;
 use sha3::{Digest, Keccak256};
 
 use crate::field::FIELD_P;
-use crate::poseidon::{hash2, hash3};
+use crate::poseidon::{hash1, hash2, hash3};
 
 /// `keccak256` of the big-endian 32-byte words, reduced into the BN254 scalar
 /// field. Matches `snarkHash()` / Solidity `keccak256(...) % p` usage.
@@ -37,8 +37,8 @@ pub fn label(scope: U256, nonce: U256) -> U256 {
 }
 
 /// `precommitmentHash = poseidon([nullifier, secret])`. This is the value passed
-/// to `Entrypoint.deposit(precommitment)` and is also the nullifier that gets
-/// spent on withdrawal.
+/// to `Entrypoint.deposit(precommitment)`. It is distinct from the spent
+/// nullifier hash, which is `poseidon([nullifier])`.
 pub fn precommitment_hash(nullifier: U256, secret: U256) -> U256 {
     hash2(nullifier, secret)
 }
@@ -77,9 +77,9 @@ impl Note {
         commitment_hash(self.value, self.label, self.precommitment())
     }
 
-    /// The nullifier hash spent on-chain equals the precommitment hash.
+    /// The nullifier hash marked spent on-chain is `poseidon([nullifier])`.
     pub fn nullifier_hash(&self) -> U256 {
-        self.precommitment()
+        hash1(self.nullifier)
     }
 }
 
@@ -99,7 +99,8 @@ mod tests {
             n.commitment(),
             commitment_hash(n.value, n.label, n.precommitment())
         );
-        assert_eq!(n.nullifier_hash(), hash2(n.nullifier, n.secret));
+        assert_eq!(n.nullifier_hash(), hash1(n.nullifier));
+        assert_ne!(n.nullifier_hash(), n.precommitment());
     }
 
     #[test]

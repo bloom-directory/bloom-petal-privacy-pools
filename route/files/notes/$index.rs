@@ -1,1 +1,6 @@
-petal::route_file!(spec: petal::static_dir_spec(), list: Vec::new());
+petal::route_file!(
+    spec: petal::store_dir_spec().caps(&["bloom:store"]),
+    fallible_list: crate::notes::list_wallets()
+        .map(petal::dirs)
+        .map_err(|e| petal::error(-4, e)),
+);

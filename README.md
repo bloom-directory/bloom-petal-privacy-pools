@@ -1,165 +1,145 @@
 # Privacy Pools Petal
 
-A [Bloom Petal](https://github.com/bloom-directory/petal) that integrates the
-deployed [0xBOW Privacy Pools](https://docs.privacypools.com/) protocol on
-Ethereum mainnet — compliant, non-custodial private transfers via zero-knowledge
-proofs and an Association Set Provider (ASP).
+A Bloom petal for the deployed 0xBOW Privacy Pools protocol on Ethereum
+mainnet.
 
-- **Entrypoint (proxy):** `0x6818809eefce719e480a7526d76bd3e561526b46`
-- **PrivacyPool (ETH):** `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb`
-- **Chain:** Ethereum mainnet
+- Entrypoint: `0x6818809eefce719e480a7526d76bd3e561526b46`
+- Native ETH PrivacyPool: `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb`
+- Supported asset: native ETH
 
-## What this petal does
+## Capabilities
 
-- Generates private deposit notes (`nullifier`, `secret`) with the host RNG.
-- Derives `precommitment = poseidon([nullifier, secret])` and stages
-  `Entrypoint.deposit(precommitment)` with ETH value via Bloom's tx outbox.
-- Stores the private note in the **secrets** store and a public status in the
-  **state** store.
-- Reads back and reconciles the on-chain `Deposited` event to fill the note's
-  `label`, committed `value`, and `commitment`.
-- Exposes pool reads (`assetConfig`, `currentTreeSize`, ASP `latestRoot`).
-- Prepares the withdrawal Groth16 proof input (note, nullifier hash, context,
-  roots, witness schema).
+- Generate private deposit notes with the Bloom host RNG.
+- Stage `Entrypoint.deposit(precommitment)` through Bloom's transaction outbox.
+- Reconcile `Deposited` logs, including a direct-RPC fallback for older Bloom
+  receipts that omitted logs.
+- Reconcile `spent` from
+  `PrivacyPool.nullifierHashes(Poseidon(nullifier))` without exposing secrets.
+- Enumerate wallets and deposit ids from the public state namespace.
+- Provide a local encrypted note backup/restore and official-SDK prover tool.
+- Validate, simulate, stage, and reconcile direct ETH withdrawals through
+  Bloom's normal owner-approval ceremony.
+- Start a private relayed withdrawal through VFS without putting the recipient,
+  proof, calldata, relayer payload, or transaction hash in an agent-visible
+  route. The owner supplies the recipient in a local passkey ceremony.
 
-The BN254 Poseidon hash and the LeanIMT are ported from `circomlibjs` and
-`@zk-kit/lean-imt` respectively, and are validated against their published test
-vectors and an upstream oracle.
+ERC-20 pools are not implemented.
 
-## Supported assets
-
-| Asset | Symbol | Decimals | Pool Address |
-|-------|--------|----------|-------------|
-| Native ETH | ETH | 18 | `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb` |
-
-ERC-20 deposits are not supported in this release.
-
-## Route table
+## Routes
 
 | Route | Method | Purpose |
-|-------|--------|---------|
-| `status.json` | GET | Petal health + self-documenting capability summary |
-| `protocol.json` | GET | Mainnet constants, addresses, hashing scheme |
-| `pool/config.json` | GET | Live pool config (minimum deposit, fees) |
-| `pool/state.json` | GET | Live pool state (tree size, ASP root, scope) |
-| `deposits/<wallet>/<id>.json` | GET | Read deposit status (reconciles on-chain) |
+|---|---|---|
+| `status.json` | GET | Health and capability summary |
+| `protocol.json` | GET | Addresses, hashes, and supported call shapes |
+| `pool/config.json` | GET | Live minimum deposit and fee configuration |
+| `pool/state.json` | GET | Live tree size, roots, and scope |
+| `deposits/<wallet>/<id>.json` | GET | Reconcile and read deposit state |
 | `deposits/<wallet>/<id>.json` | WRITE | Stage a new ETH deposit |
-| `notes/<wallet>/<id>.json` | GET | Public note view (no secrets) |
-| `withdrawals/<wallet>/<id>.json` | GET | Withdrawal proof-input preparation |
+| `notes/<wallet>/<id>.json` | GET | Public note view with no secrets |
+| `withdrawals/<wallet>/<id>.json` | GET | Readiness or staged/settled withdrawal state |
+| `withdrawals/<wallet>/<id>.json` | WRITE | Stage a direct withdrawal, or advance a recipient-private relay ceremony |
 
-Directory listings (`deposits/`, `notes/`, `withdrawals/` and their
-`<wallet>/` children) return empty — an agent must know exact `<wallet>` and
-`<id>` values. This is a known gap (no `store_list` in the SDK); see AGENTS.md
-for workaround.
+The `deposits`, `notes`, and `withdrawals` directories enumerate public wallet
+and id records. Listings never inspect the secret namespace.
 
-## Deposit write body
-
-```json
-{
-  "amount_wei": "1000000000000000000",
-  "asset": "eth"
-}
-```
-
-- **`amount_wei`** (required): decimal wei amount. Becomes `msg.value`. Must be
-  ≥ the pool's minimum deposit (check `pool/config.json` first).
-- **`asset`** (optional): only `"eth"` is supported. Omitting it defaults to ETH.
-
-`<wallet>` is a Bloom wallet alias. `<id>` is a caller-chosen durable
-idempotency key (e.g. `"deposit-001"`).
-
-### Example
+## Deposit
 
 ```sh
 bloom vfs write \
   /petals/privacy-pools/deposits/my-wallet/deposit-001.json \
-  --data '{ "amount_wei": "1000000000000000000" }'
+  --data '{"amount_wei":"10000000000000000","asset":"eth"}'
 ```
 
-## Transaction lifecycle
+`amount_wei` is decimal wei and must meet the live pool minimum. The caller id
+is a durable idempotency key. A successful write means the transaction was
+staged, not mined.
 
-```
-                WRITE
-                  │
-                  ▼
-             ┌─────────┐
-             │ staging │ ← placeholder persisted, tx outbox call in flight
-             └────┬────┘
-                  │ tx_stage succeeds
-                  ▼
-             ┌─────────┐
-             │  staged │ ← tx in outbox, awaiting owner approval + mining
-             └────┬────┘
-                  │ tx mined, Deposited log parsed
-                  ▼
-            ┌──────────┐
-            │ confirmed│ ← label, value, commitment filled
-            └──────────┘
+Deposit lifecycle:
 
-    Error branches:
-    staging ──(tx_stage fails)──▶ stage-failed ← retryable with same id
-    staged  ──(tx reverted)────▶ failed
+```text
+staging -> staged -> confirmed
+    |          |
+    |          +-> failed/reverted
+    +-> stage-failed (same id and amount may retry)
 ```
 
-A WRITE means the deposit was **staged**, not settled. Only a later GET
-returning `status: "confirmed"` means it settled.
+A confirmed record includes `value` (post-vetting-fee), `label`, and
+`commitment`. Reads self-heal these fields from the canonical receipt when
+possible.
 
-### Idempotency contract
+## Backups and withdrawals
 
-- Same `<id>` + same `amount_wei` + `"staged"`/`"confirmed"` status → returns
-  the existing deposit (safe retry).
-- Same `<id>` + same `amount_wei` + `"stage-failed"` status → retries the
-  deposit.
-- Same `<id>` + different `amount_wei` → error `-3` (conflict, use new id).
-- Same `<id>` + `"staging"` status → error `-3` (incomplete, inspect outbox).
+The `nullifier` and `secret` are the ownership credential. Package migration is
+not a backup. Direct withdrawal staging requires verified encrypted backups for
+the original note and the circuit's replacement note.
 
-## Deposit status fields (GET response)
+Install the pinned local companion:
 
-| Field | Type | Present when | Description |
-|-------|------|-------------|-------------|
-| `status` | string | always | `staging` / `staged` / `confirmed` / `failed` / `stage-failed` |
-| `amount_wei` | string | always | Decimal wei sent |
-| `precommitment` | string | always | `0x`-hex poseidon([nullifier, secret]) |
-| `tx` | object | always | `{ chain, outbox_id, tx_hash? }` |
-| `value` | string | confirmed | Decimal wei committed (post vetting-fee) |
-| `label` | string | confirmed | `0x`-hex keccak256(scope, nonce) |
-| `commitment` | string | confirmed | `0x`-hex poseidon([value, label, precommitment]) |
-| `spent` | bool | always | Whether this note was withdrawn (always false in-petal) |
-| `approval_action_id` | string | staged | Owner-approval action ID |
-| `approval_ceremony_url` | string | staged | URL for the approval ceremony |
-| `approval_expires_ms` | number | staged | Expiry timestamp |
+```sh
+cd tools/privacy-pools
+npm ci --ignore-scripts
+npm test
+```
 
-## Withdrawal proving boundary
+It supports:
 
-Generating the withdrawal Groth16 proof needs the circuit wasm + a trusted-setup
-zkey, runs for seconds, and must happen locally for privacy. That step stays
-**out of the petal** (matching the official TypeScript SDK + relayer split).
+```text
+bloom-privacy-pools backup
+bloom-privacy-pools restore
+bloom-privacy-pools verify-artifacts
+bloom-privacy-pools prepare
+bloom-privacy-pools relay-private
+```
 
-`withdrawals/<wallet>/<id>.json` returns everything an external prover needs:
+`prepare` uses `@0xbow/privacy-pools-core-sdk@1.4.0`, verifies the official
+withdrawal artifact hashes, fetches ordered ASP/state leaves, proves locally,
+simulates, backs up replacement secrets, and outputs a public write body for
+the withdrawal route. The signing wallet is explicit and may differ from the
+note wallet only when it resolves to the exact processooor encoded in the
+proof.
 
-- Note's public commitment, label, value, nullifier hash (precommitment)
-- Example withdrawal context hash (with zero-address recipient — caller
-  recomputes with the real recipient)
-- Current ASP root and state tree size (best-effort live reads)
-- Full witness schema: public inputs, private signals, Merkle proof slots
+For a recipient-private withdrawal, the VFS request contains mode, replacement
+id, optional amount, and (only when needed) a passkey-wallet alias. The note
+wallet is not assumed to be the passkey identity. The owner enters the
+destination in the local ceremony; it never returns through VFS. The resumable
+`relay-private` companion precomputes before requesting the short-lived quote,
+proves with `processooor = Entrypoint`, exactly simulates, submits to the
+configured HTTPS relayer, recovers lost responses from chain events, waits for
+finality, and prints only coarse redacted status.
 
-The Merkle proof fields (`stateSiblings`, `stateIndex`, `ASPSiblings`,
-`ASPIndex`) are `null` — generating them requires syncing the pool's
-`Deposited` events into a LeanIMT and querying the ASP set, which belongs in a
-data service, not a route handler. The response includes instructions for
-filling these fields.
+The petal decodes and checks that public body again, including the note's spent
+nullifier, withdrawn value, replacement commitment, context, latest ASP root,
+signing address, and exact `eth_call`, before it stages anything.
 
-## Secrets boundary
+See [WITHDRAWAL.md](WITHDRAWAL.md) for the complete commands and settlement
+contract.
 
-`nullifier` and `secret` are the only thing that lets the owner later withdraw.
-They are persisted in the **secrets** store namespace and are **never** returned
-by any read route. Public surfaces expose only `commitment`, `label`, `value`,
-`precommitment`, `status`, and `spent`.
+## Important protocol distinctions
 
-## Capabilities
+- Precommitment: `Poseidon(nullifier, secret)`.
+- Spent nullifier hash: `Poseidon(nullifier)`.
+- Commitment: `Poseidon(value, label, precommitment)`.
+- Direct submission: `PrivacyPool.withdraw(withdrawal, proof)`.
+- Relayed submission: `Entrypoint.relay(withdrawal, proof, scope)`.
+- `Entrypoint.withdraw` does not exist.
 
-`bloom:store`, `bloom:tx.outbox`, `bloom:chain`. No raw HTTP (`bloom:http`),
-no signing intents (`bloom:sign`), no network allowlist (`net.allow`).
+The preview leaves `context` null until a real processooor is selected; it does
+not emit a zero-address value that could be mistaken for usable proof input.
+
+## Capabilities and security boundary
+
+Declared host capabilities are `bloom:store`, `bloom:tx.outbox`,
+`bloom:chain`, `bloom:vfs.read`, and `bloom:private-input`. VFS read is used
+only to resolve a direct-withdrawal signing wallet. Private input is restricted
+by Bloom to this petal and returns the approved recipient only to the trusted
+route invocation. The petal has no raw HTTP or signing capability. Direct
+owner approval remains in Bloom's outbox; private relay submission is performed
+by the local companion.
+
+Secrets are never returned by a VFS route. The companion reads the active local
+secret store and accepts passphrases only via a mode-`0600` file. This prevents
+an ordinary VFS-driving agent from learning the recipient; it does not protect
+against a process with unrestricted read access to the same OS account.
 
 ## Development
 
@@ -167,8 +147,9 @@ no signing intents (`bloom:sign`), no network allowlist (`net.allow`).
 cargo fmt --manifest-path route/Cargo.toml --check
 cargo test --manifest-path route/Cargo.toml --locked
 cargo clippy --manifest-path route/Cargo.toml --locked --all-targets -- -D warnings
-scripts/build.sh                      # petal build --root .
-scripts/check-route-architecture.sh   # source-level architecture check
+cd tools/privacy-pools && npm ci --ignore-scripts && npm test
+scripts/build.sh
+scripts/check-route-architecture.sh
 ```
 
-Do not run a live-money deposit without explicit authorization.
+Do not run a live-money deposit or withdrawal without explicit authorization.

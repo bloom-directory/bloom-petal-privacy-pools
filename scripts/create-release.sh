@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Creates a GitHub release for bloom-petal-privacy-pools with all artifacts.
-# Usage: GH_TOKEN=<token> VERSION=0.1.0 bash scripts/create-release.sh
+# Usage: GH_TOKEN=<token> VERSION=0.1.3 bash scripts/create-release.sh
 set -euo pipefail
 
 REPO="bloom-directory/bloom-petal-privacy-pools"
-VERSION="${VERSION:-0.1.0}"
+VERSION="${VERSION:-0.1.3}"
 TAG="v${VERSION}"
 STAGING="${STAGING:-/tmp/privacy-pools-release}"
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -44,7 +44,7 @@ RELEASE_JSON=$(curl -s -X POST \
   "tag_name": "$TAG",
   "target_commitish": "$COMMIT",
   "name": "$TAG",
-  "body": "## privacy-pools petal $TAG\n\n0xBOW Privacy Pools integration for Ethereum mainnet.\n\n**15 routes** — deposits, notes, withdrawals, pool reads, status, protocol\n\n**Supported asset**: ETH (native)\n\n**Capabilities**: bloom:store, bloom:tx.outbox, bloom:chain",
+  "body": "## privacy-pools petal $TAG\n\n0xBOW Privacy Pools integration for Ethereum mainnet.\n\n**15 routes** — deposits, notes, direct-withdrawal staging/reconciliation, pool reads, status, protocol\n\n**Local tools**: encrypted note backup/restore, pinned official-SDK prover, artifact verification\n\n**Supported asset**: ETH (native)\n\n**Capabilities**: bloom:store, bloom:tx.outbox, bloom:chain, bloom:vfs.read, bloom:private-input",
   "draft": false,
   "prerelease": false
 }

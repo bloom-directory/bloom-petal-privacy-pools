@@ -12,8 +12,19 @@ petal::route_file!(
         "hashing": {
             "node": "poseidon([left,right])",
             "precommitment": "poseidon([nullifier,secret])",
+            "spent_nullifier_hash": "poseidon([nullifier])",
             "commitment": "poseidon([value,label,precommitment])",
             "label": "keccak256(abi.encode(scope,nonce))"
+        },
+        "withdrawal_calls": {
+            "direct": "PrivacyPool.withdraw(withdrawal,proof)",
+            "relayed": "Entrypoint.relay(withdrawal,proof,scope)",
+            "entrypoint_withdraw": "does not exist"
+        },
+        "withdrawal_support": {
+            "direct": "validate + live-root check + simulate + Bloom outbox stage + settlement reconciliation",
+            "relayed": "private destination ceremony + signed relayer quote + local proof + Entrypoint.relay + settlement reconciliation",
+            "proving": "local companion tool using @0xbow/privacy-pools-core-sdk@1.4.0 and pinned artifact hashes"
         },
         "sources": [
             "https://docs.privacypools.com/",

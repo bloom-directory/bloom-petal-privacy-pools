@@ -6,10 +6,10 @@ kind = "github"
 repository = "bloom-directory/bloom-petal-privacy-pools"
 
 [consent]
-summary = "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet, manage private deposit notes, read pool state, and prepare withdrawal proof inputs. Withdrawal Groth16 proving stays out-of-petal (snarkjs)."
+summary = "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet, manage encrypted note backups, prepare proofs locally, and validate, stage, and reconcile direct withdrawals through Bloom owner approval."
 
 [caps]
-allowed = ["bloom:store", "bloom:tx.outbox", "bloom:chain"]
+allowed = ["bloom:store", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read", "bloom:private-input"]
 
 [store]
 namespaces = ["state"]

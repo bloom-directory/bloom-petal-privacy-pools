@@ -1,0 +1,22 @@
+{
+  "name": "@bloom/privacy-pools-tools",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "bloom-privacy-pools": "./cli.mjs"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.mjs",
+    "test:fork": "node test/mainnet-fork.mjs"
+  },
+  "dependencies": {
+    "@0xbow/privacy-pools-core-sdk": "1.4.0",
+    "maci-crypto": "2.5.0",
+    "viem": "2.22.14"
+  },
+  "overrides": {
+    "underscore": "1.13.8",
+    "ws": "8.21.3"
+  }
+}

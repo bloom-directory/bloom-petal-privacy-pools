@@ -196,6 +196,7 @@ pub fn create(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         label: None,
         commitment: None,
         spent: false,
+        backup_verified: false,
         approval_action_id: None,
         approval_ceremony_url: None,
         approval_expires_ms: None,
@@ -289,8 +290,81 @@ pub fn read(wallet: &str, id: &str) -> DispatchResponse {
 /// Mutates `note` and, on a transition, re-persists both the private note and
 /// the public status.
 pub fn reconcile(note: &mut StoredNote, wallet: &str, id: &str) -> Result<(), String> {
-    let inspection = sdk::tx_inspect(wallet, CHAIN, &note.tx.outbox_id).map_err(|e| e.message())?;
-    reconcile_with(note, wallet, id, &inspection)
+    // A replacement note created by a recipient-private relay has no Bloom
+    // outbox entry and deliberately retains no transaction hash: either would
+    // give an agent a direct correlation handle to recover the recipient from
+    // Ethereum. The relay helper verified its creation event before writing
+    // the note, so subsequent reads only need the canonical spent-nullifier
+    // check.
+    if note.tx.outbox_id == "private-relay" {
+        if note.status != "confirmed" || note.commitment.is_none() || note.value.is_none() {
+            return Err("private relay replacement note is incomplete".into());
+        }
+        let nullifier = U256::from_str_radix(note.nullifier.trim_start_matches("0x"), 16)
+            .map_err(|_| "stored nullifier is not valid hex")?;
+        let spent = crate::chain::nullifier_spent(POOL_ETH, crate::poseidon::hash1(nullifier))?;
+        if note.spent != spent {
+            note.spent = spent;
+            notes::persist_update(note, wallet, id)?;
+        }
+        return Ok(());
+    }
+    let mut inspection = match sdk::tx_inspect(wallet, CHAIN, &note.tx.outbox_id) {
+        Ok(inspection) => inspection,
+        Err(outbox_error) => {
+            // Petal reinstalls and old Bloom migrations can legitimately drop
+            // the historical outbox entry while the note still retains its
+            // transaction hash. In that case the canonical chain receipt is
+            // sufficient to reconstruct a confirmed inspection and heal the
+            // public deposit fields. If the receipt is not available, retain
+            // the original outbox error instead of guessing a state.
+            let Some(tx_hash) = note.tx.tx_hash.as_deref() else {
+                return Err(outbox_error.message());
+            };
+            let Some(receipt_json) = crate::chain::transaction_receipt(tx_hash)? else {
+                return Err(outbox_error.message());
+            };
+            OutboxInspection {
+                outbox_id: note.tx.outbox_id.clone(),
+                state: "confirmed".to_string(),
+                tx_hash: Some(tx_hash.to_string()),
+                receipt_json: Some(receipt_json),
+            }
+        }
+    };
+
+    // Some older outbox receipts prove mining but omit logs. Recover the
+    // canonical receipt directly from RPC so a migrated note can self-heal.
+    let settled = matches!(inspection.state.as_str(), "confirmed" | "mined" | "success");
+    if settled
+        && inspection
+            .receipt_json
+            .as_deref()
+            .and_then(parse_deposited)
+            .is_none()
+        && let Some(tx_hash) = inspection.tx_hash.as_deref()
+        && let Some(receipt) = crate::chain::transaction_receipt(tx_hash)?
+    {
+        inspection.receipt_json = Some(receipt);
+    }
+
+    let mut changed = apply_reconciliation(note, &inspection)? == Reconciliation::Updated;
+
+    // The contract is authoritative for spent state. This check derives the
+    // public nullifier hash internally and never returns the private nullifier.
+    let nullifier = U256::from_str_radix(note.nullifier.trim_start_matches("0x"), 16)
+        .map_err(|_| "stored nullifier is not valid hex")?;
+    let spent = crate::chain::nullifier_spent(POOL_ETH, crate::poseidon::hash1(nullifier))?;
+    if note.spent != spent {
+        note.spent = spent;
+        changed = true;
+    }
+
+    if changed {
+        notes::persist_update(note, wallet, id)
+    } else {
+        Ok(())
+    }
 }
 
 /// Outcome of [`apply_reconciliation`]: whether the note changed and therefore
@@ -343,7 +417,9 @@ pub fn apply_reconciliation(
                 "receipt commitment does not match poseidon([value,label,precommitment])".into(),
             );
         }
-        // Ownership: the spent nullifier hash must be this note's precommitment.
+        // Ownership: the receipt's deposit precommitment must match this note.
+        // The spent nullifier hash used during withdrawal is poseidon(nullifier)
+        // and is intentionally a different value.
         if format!("0x{:x}", parsed.precommitment) != note.precommitment {
             return Err("receipt precommitment does not match this note".into());
         }
@@ -489,6 +565,7 @@ mod tests {
             label: None,
             commitment: None,
             spent: false,
+            backup_verified: false,
             approval_action_id: None,
             approval_ceremony_url: None,
             approval_expires_ms: None,

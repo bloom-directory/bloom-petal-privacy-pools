@@ -4,3 +4,5 @@
 petal/
 !petal/.gitkeep
 *.wasm
+**/node_modules/
+/local-petal

@@ -64,6 +64,18 @@ pub fn asset_selector() -> [u8; 4] {
 pub fn current_tree_size_selector() -> [u8; 4] {
     selector("currentTreeSize()")
 }
+pub fn current_root_selector() -> [u8; 4] {
+    selector("currentRoot()")
+}
+pub fn current_tree_depth_selector() -> [u8; 4] {
+    selector("currentTreeDepth()")
+}
+pub fn nullifier_hashes_selector() -> [u8; 4] {
+    selector("nullifierHashes(uint256)")
+}
+pub fn withdraw_selector() -> [u8; 4] {
+    selector("withdraw((address,bytes),(uint256[2],uint256[2][2],uint256[2],uint256[8]))")
+}
 
 /// `Deposited(address indexed _depositor, uint256 _commitment, uint256 _label,
 /// uint256 _value, uint256 _precommitmentHash)` topic0
@@ -72,6 +84,10 @@ pub fn current_tree_size_selector() -> [u8; 4] {
 /// `0xe3b53cd1a44fbf11535e145d80b8ef1ed6d57a73bf5daa7e939b6b01657d6549`.
 pub fn deposited_topic0() -> [u8; 32] {
     keccak256("Deposited(address,uint256,uint256,uint256,uint256)")
+}
+
+pub fn withdrawn_topic0() -> [u8; 32] {
+    keccak256("Withdrawn(address,uint256,uint256,uint256)")
 }
 
 #[cfg(test)]

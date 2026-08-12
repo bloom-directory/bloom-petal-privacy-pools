@@ -23,6 +23,30 @@ fn eth_call(to: Address, data: &[u8], label: &str) -> Result<Vec<u8>, String> {
     hex::decode(body).map_err(|e| format!("{label}: hex decode failed: {e}"))
 }
 
+pub fn eth_call_from(
+    from: Address,
+    to: Address,
+    data: &[u8],
+    label: &str,
+) -> Result<Vec<u8>, String> {
+    let params = serde_json::json!([
+        {
+            "from": format!("{from:?}"),
+            "to": format!("{to:?}"),
+            "data": format!("0x{}", hex::encode(data))
+        },
+        "latest"
+    ])
+    .to_string();
+    let result = petal::sdk::chain_read(CHAIN, "eth_call", &params).map_err(|e| e.message())?;
+    let encoded: String = serde_json::from_str(&result)
+        .map_err(|_| format!("{label}: RPC result is not a string"))?;
+    let body = encoded
+        .strip_prefix("0x")
+        .ok_or(format!("{label}: result is not 0x-prefixed"))?;
+    hex::decode(body).map_err(|e| format!("{label}: hex decode failed: {e}"))
+}
+
 fn call_view(selector: &[u8; 4], label: &str, to: Address) -> Result<Vec<u8>, String> {
     eth_call(to, selector, label)
 }
@@ -98,6 +122,44 @@ pub fn current_tree_size(pool: Address) -> Result<U256, String> {
         pool,
     )?;
     u256_word(&out)
+}
+
+pub fn current_root(pool: Address) -> Result<U256, String> {
+    let out = call_view(
+        &crate::protocol::current_root_selector(),
+        "currentRoot",
+        pool,
+    )?;
+    u256_word(&out)
+}
+
+pub fn current_tree_depth(pool: Address) -> Result<U256, String> {
+    let out = call_view(
+        &crate::protocol::current_tree_depth_selector(),
+        "currentTreeDepth",
+        pool,
+    )?;
+    u256_word(&out)
+}
+
+pub fn nullifier_spent(pool: Address, nullifier_hash: U256) -> Result<bool, String> {
+    let mut data = Vec::with_capacity(36);
+    data.extend_from_slice(&crate::protocol::nullifier_hashes_selector());
+    data.extend_from_slice(&nullifier_hash.to_be_bytes::<32>());
+    Ok(u256_word(&eth_call(pool, &data, "nullifierHashes")?)? != U256::ZERO)
+}
+
+pub fn transaction_receipt(tx_hash: &str) -> Result<Option<String>, String> {
+    let params = serde_json::json!([tx_hash]).to_string();
+    let result = petal::sdk::chain_read(CHAIN, "eth_getTransactionReceipt", &params)
+        .map_err(|e| e.message())?;
+    let value: serde_json::Value =
+        serde_json::from_str(&result).map_err(|e| format!("transaction receipt JSON: {e}"))?;
+    if value.is_null() {
+        Ok(None)
+    } else {
+        Ok(Some(value.to_string()))
+    }
 }
 
 /// Entrypoint `latestRoot()` → current ASP root.

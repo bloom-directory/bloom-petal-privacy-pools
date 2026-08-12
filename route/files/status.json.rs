@@ -3,7 +3,7 @@ petal::route_file!(
     read: |_ctx: &petal::Ctx| petal::read_json_value(&serde_json::json!({
         "petal": "privacy-pools",
         "status": "ok",
-        "description": "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet. Generates private deposit notes, stages deposits via the tx outbox, reconciles on-chain confirmation, and prepares withdrawal proof inputs. Withdrawal Groth16 proving stays out-of-petal (snarkjs).",
+        "description": "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet. Direct withdrawals use Bloom owner approval; recipient-private withdrawals use a passkey-bound local ceremony and protocol relayer without exposing the destination through VFS.",
         "protocol": {
             "name": "0xBOW Privacy Pools",
             "chain": crate::protocol::CHAIN,
@@ -23,11 +23,21 @@ petal::route_file!(
             "eth-deposit",
             "deposit-read-and-reconcile",
             "note-view",
-            "withdrawal-input-prep",
+            "withdrawal-readiness-preview",
+            "encrypted-note-backup-and-restore-tool",
+            "official-sdk-withdrawal-prover-tool",
+            "direct-withdrawal-validate-simulate-stage",
+            "recipient-private-relayed-withdrawal",
+            "withdrawal-event-reconciliation",
+            "onchain-spent-nullifier-reconciliation",
+            "deposit-and-note-directory-listing",
             "pool-config-read",
             "pool-state-read",
         ],
-        "withdrawal_proving": "out-of-petal (snarkjs groth16.fullProve)",
-        "docs": ["README.md", "AGENTS.md", "protocol.json"]
+        "withdrawal_proving": "out-of-petal; use the official @0xbow/privacy-pools-core-sdk locally",
+        "withdrawal_submission": "direct withdrawals use the Bloom outbox; recipient-private withdrawals use Entrypoint.relay through the redacting local companion",
+        "spent_status": "reconciled from PrivacyPool.nullifierHashes(poseidon(nullifier)) without exposing note secrets",
+        "backup_policy": "direct withdrawal staging requires verified encrypted backups for the existing and replacement notes",
+        "docs": ["README.md", "AGENTS.md", "WITHDRAWAL.md", "protocol.json"]
     }))
 );

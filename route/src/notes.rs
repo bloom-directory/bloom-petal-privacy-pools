@@ -6,7 +6,10 @@
 
 use petal::sdk;
 
-use crate::types::{DepositStatus, NoteView, StoredNote};
+use crate::types::{
+    DepositStatus, NoteView, PrivateRelayRecipient, PrivateRelayStatus, ReplacementNote,
+    StoredNote, WithdrawalStatus,
+};
 
 const MAX_NOTE_BYTES: usize = 8 * 1024;
 
@@ -30,6 +33,18 @@ fn note_key(wallet: &str, id: &str) -> String {
 }
 fn status_key(wallet: &str, id: &str) -> String {
     format!("privacy-pools/deposits/{wallet}/{id}")
+}
+fn replacement_key(wallet: &str, id: &str) -> String {
+    format!("privacy-pools/replacements/{wallet}/{id}")
+}
+fn withdrawal_key(wallet: &str, id: &str) -> String {
+    format!("privacy-pools/withdrawals/{wallet}/{id}")
+}
+fn private_relay_key(wallet: &str, id: &str) -> String {
+    format!("privacy-pools/private-relays/{wallet}/{id}")
+}
+fn private_recipient_key(wallet: &str, id: &str) -> String {
+    format!("privacy-pools/private-inputs/{wallet}/{id}")
 }
 
 /// Store keyed by the user-chosen id (the durable, caller-facing key).
@@ -98,4 +113,123 @@ pub fn persist_update(note: &StoredNote, wallet: &str, id: &str) -> Result<(), S
 /// Public view of a stored note (no secrets), or `None` if not found.
 pub fn note_view(wallet: &str, id: &str) -> Result<Option<NoteView>, String> {
     Ok(load_note(wallet, id)?.as_ref().map(NoteView::from))
+}
+
+fn listed_suffixes(prefix: &str) -> Result<Vec<String>, String> {
+    let mut values = sdk::store_list(prefix, 256 * 1024)
+        .map_err(|e| e.message())?
+        .into_iter()
+        .filter_map(|key| key.strip_prefix(prefix).map(str::to_owned))
+        .filter(|suffix| !suffix.is_empty() && !suffix.contains('/'))
+        .collect::<Vec<_>>();
+    values.sort();
+    values.dedup();
+    Ok(values)
+}
+
+/// Wallet aliases with at least one public deposit record.
+pub fn list_wallets() -> Result<Vec<String>, String> {
+    let prefix = "privacy-pools/deposits/";
+    let mut wallets = sdk::store_list(prefix, 256 * 1024)
+        .map_err(|e| e.message())?
+        .into_iter()
+        .filter_map(|key| {
+            key.strip_prefix(prefix)
+                .and_then(|rest| rest.split('/').next())
+                .filter(|wallet| !wallet.is_empty())
+                .map(str::to_owned)
+        })
+        .collect::<Vec<_>>();
+    wallets.sort();
+    wallets.dedup();
+    Ok(wallets)
+}
+
+/// Deposit ids for one wallet, derived only from the public state namespace.
+pub fn list_ids(wallet: &str) -> Result<Vec<String>, String> {
+    validate_idents(wallet, "list")?;
+    listed_suffixes(&format!("privacy-pools/deposits/{wallet}/"))
+}
+
+pub fn load_replacement(wallet: &str, id: &str) -> Result<Option<ReplacementNote>, String> {
+    match read_secret(&replacement_key(wallet, id), MAX_NOTE_BYTES)? {
+        Some(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| format!("replacement note parse: {e}")),
+        None => Ok(None),
+    }
+}
+
+pub fn store_withdrawal(status: &WithdrawalStatus) -> Result<(), String> {
+    let bytes = serde_json::to_vec(status).map_err(|e| format!("withdrawal serialize: {e}"))?;
+    sdk::store_put(
+        &withdrawal_key(&status.note_wallet, &status.note_id),
+        &bytes,
+        false,
+    )
+    .map_err(|e| e.message())
+}
+
+pub fn store_withdrawal_new(status: &WithdrawalStatus) -> Result<(), String> {
+    let bytes = serde_json::to_vec(status).map_err(|e| format!("withdrawal serialize: {e}"))?;
+    sdk::store_put_new(
+        &withdrawal_key(&status.note_wallet, &status.note_id),
+        &bytes,
+        false,
+    )
+    .map_err(|e| e.message())
+}
+
+pub fn load_withdrawal(wallet: &str, id: &str) -> Result<Option<WithdrawalStatus>, String> {
+    match sdk::store_get(&withdrawal_key(wallet, id), MAX_NOTE_BYTES) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| format!("withdrawal parse: {e}")),
+        Err(petal::SdkError::Host(petal::HostStatus::NotFound)) => Ok(None),
+        Err(e) => Err(e.message()),
+    }
+}
+
+pub fn store_private_relay(status: &PrivateRelayStatus) -> Result<(), String> {
+    let bytes = serde_json::to_vec(status).map_err(|e| format!("private relay serialize: {e}"))?;
+    sdk::store_put(
+        &private_relay_key(&status.note_wallet, &status.note_id),
+        &bytes,
+        false,
+    )
+    .map_err(|e| e.message())
+}
+
+pub fn store_private_relay_new(status: &PrivateRelayStatus) -> Result<(), String> {
+    let bytes = serde_json::to_vec(status).map_err(|e| format!("private relay serialize: {e}"))?;
+    sdk::store_put_new(
+        &private_relay_key(&status.note_wallet, &status.note_id),
+        &bytes,
+        false,
+    )
+    .map_err(|e| e.message())
+}
+
+pub fn load_private_relay(wallet: &str, id: &str) -> Result<Option<PrivateRelayStatus>, String> {
+    match sdk::store_get(&private_relay_key(wallet, id), MAX_NOTE_BYTES) {
+        Ok(bytes) => serde_json::from_slice(&bytes)
+            .map(Some)
+            .map_err(|e| format!("private relay parse: {e}")),
+        Err(petal::SdkError::Host(petal::HostStatus::NotFound)) => Ok(None),
+        Err(e) => Err(e.message()),
+    }
+}
+
+pub fn store_private_recipient(recipient: &PrivateRelayRecipient) -> Result<(), String> {
+    let bytes = serde_json::to_vec(recipient)
+        .map_err(|e| format!("private relay recipient serialize: {e}"))?;
+    let key = private_recipient_key(&recipient.note_wallet, &recipient.note_id);
+    if let Some(existing) = read_secret(&key, MAX_NOTE_BYTES)? {
+        return if existing == bytes {
+            Ok(())
+        } else {
+            Err("a different private recipient is already stored for this note".into())
+        };
+    }
+    sdk::store_put_new(&key, &bytes, true).map_err(|e| e.message())
 }
