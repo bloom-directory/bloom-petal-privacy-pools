@@ -5,7 +5,7 @@ mainnet. Entrypoint proxy `0x6818809eefce719e480a7526d76bd3e561526b46`; ETH pool
 `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb`.
 
 It targets `bloom:route@0.1.0` and the canonical SDK/builder pinned in
-`petal-build.toml` (rev `b9fc22d6d8211bc41304b38b1ef8b5269c8035bd`). It does not
+`petal-build.toml` (rev `61938d0c127cfe03c7e3e55baed0ba1439bc5ca2`). It does not
 copy WIT, SDK, or builder code.
 
 ## Routes

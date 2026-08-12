@@ -12,7 +12,7 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  PETAL_REV: eda6647c523bba161eaa22812aa0e75ec7782404
+  PETAL_REV: 61938d0c127cfe03c7e3e55baed0ba1439bc5ca2
 
 jobs:
   rust:
