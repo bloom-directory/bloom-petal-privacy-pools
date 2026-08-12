@@ -12,7 +12,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  PETAL_REV: b9fc22d6d8211bc41304b38b1ef8b5269c8035bd
+  # Must match scripts/build.sh's PETAL_REV. This is the only place CI pins
+  # the Petal CLI/SDK revision — keep the two in sync by hand until there's
+  # a shared source of truth.
+  PETAL_REV: 1a1729c1ab5032a26fdb9ad94571ac20edff2062
 
 jobs:
   rust:
@@ -67,8 +70,11 @@ jobs:
             --root "$HOME/.petal-tool" \
             bloom-petal-cli
           echo "$HOME/.petal-tool/bin" >> "$GITHUB_PATH"
+          echo "PETAL_BIN=$HOME/.petal-tool/bin/petal" >> "$GITHUB_ENV"
 
       - name: petal build
+        # PETAL_BIN pins scripts/build.sh to the CLI installed above instead
+        # of letting it silently fall back to an ambient PATH lookup.
         run: scripts/build.sh
 
       - name: petal check
