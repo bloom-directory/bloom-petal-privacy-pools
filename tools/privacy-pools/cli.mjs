@@ -8,9 +8,8 @@ import {
   scryptSync,
   timingSafeEqual,
 } from "node:crypto";
-import { constants as fsConstants } from "node:fs";
 import {
-  access,
+  link,
   mkdir,
   open,
   readFile,
@@ -150,14 +149,6 @@ function safeSegment(value, label) {
 
 export async function atomicWrite(path, bytes, { exclusive = false, mode = 0o600 } = {}) {
   await mkdir(dirname(path), { recursive: true, mode: 0o700 });
-  if (exclusive) {
-    try {
-      await access(path, fsConstants.F_OK);
-      fail(`refusing to overwrite ${path}`);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
-  }
   const temporary = `${path}.tmp-${process.pid}-${randomBytes(6).toString("hex")}`;
   let file;
   try {
@@ -168,7 +159,32 @@ export async function atomicWrite(path, bytes, { exclusive = false, mode = 0o600
   } finally {
     await file?.close();
   }
-  await rename(temporary, path);
+  try {
+    if (exclusive) {
+      // link() atomically fails with EEXIST if the destination already
+      // exists. Unlike the previous access()-then-rename() sequence, there
+      // is no window between the check and the act for a second concurrent
+      // writer to slip in: the filesystem itself makes EEXIST authoritative,
+      // and rename() (used below for the non-exclusive case) would have
+      // silently replaced an existing destination instead of failing.
+      try {
+        await link(temporary, path);
+      } catch (error) {
+        if (error?.code === "EEXIST") fail(`refusing to overwrite ${path}`);
+        throw error;
+      }
+    } else {
+      await rename(temporary, path);
+    }
+  } finally {
+    if (exclusive) {
+      // link() leaves the temp file in place on both success and failure
+      // (it doesn't consume it the way rename() does); always clean it up.
+      await unlink(temporary).catch((error) => {
+        if (error?.code !== "ENOENT") throw error;
+      });
+    }
+  }
   const directory = await open(dirname(path), "r");
   try {
     await directory.sync();
@@ -203,15 +219,42 @@ async function passphrase(path) {
   return value;
 }
 
+const ENVELOPE_SCHEMA_V1 = "bloom.privacy-pools.encrypted-note.v1";
+const ENVELOPE_SCHEMA_V2 = "bloom.privacy-pools.encrypted-note.v2";
+const ENVELOPE_STRUCTURAL_FIELDS = new Set([
+  "schema", "cipher", "kdf", "iv", "tag", "ciphertext", "plaintext_sha256",
+]);
+
+// v2 envelopes bind their own routing metadata (kind/wallet/id/parent_id) as
+// AES-GCM Additional Authenticated Data. Those fields are stored as plaintext
+// JSON alongside the ciphertext (so backups stay inspectable without the
+// password), but restore uses them to decide *where on disk to write* — so
+// without AAD, anyone with write access to a backup file (no password
+// needed) could edit `wallet`/`id`/`kind` and have decryption succeed
+// against the unmodified ciphertext, retargeting a restore. Binding them as
+// AAD makes any such edit fail GCM authentication before those fields are
+// ever trusted.
+function envelopeAad(metadata) {
+  const keys = Object.keys(metadata).sort();
+  return Buffer.from(JSON.stringify(Object.fromEntries(keys.map((key) => [key, metadata[key]]))));
+}
+
+function envelopeMetadata(envelope) {
+  return Object.fromEntries(
+    Object.entries(envelope).filter(([key]) => !ENVELOPE_STRUCTURAL_FIELDS.has(key)),
+  );
+}
+
 export function encryptEnvelope(plaintext, password, metadata) {
   const salt = randomBytes(16);
   const iv = randomBytes(12);
   const key = scryptSync(password, salt, 32, { N: 1 << 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
   const cipher = createCipheriv("aes-256-gcm", key, iv);
+  cipher.setAAD(envelopeAad(metadata));
   const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
   const tag = cipher.getAuthTag();
   return {
-    schema: "bloom.privacy-pools.encrypted-note.v1",
+    schema: ENVELOPE_SCHEMA_V2,
     cipher: "aes-256-gcm",
     kdf: { name: "scrypt", N: 131072, r: 8, p: 1, salt: salt.toString("base64") },
     iv: iv.toString("base64"),
@@ -223,7 +266,10 @@ export function encryptEnvelope(plaintext, password, metadata) {
 }
 
 export function decryptEnvelope(envelope, password) {
-  assert(envelope.schema === "bloom.privacy-pools.encrypted-note.v1", "unsupported backup schema");
+  assert(
+    envelope.schema === ENVELOPE_SCHEMA_V1 || envelope.schema === ENVELOPE_SCHEMA_V2,
+    "unsupported backup schema",
+  );
   const salt = Buffer.from(envelope.kdf.salt, "base64");
   const key = scryptSync(password, salt, 32, {
     N: envelope.kdf.N,
@@ -232,6 +278,14 @@ export function decryptEnvelope(envelope, password) {
     maxmem: 256 * 1024 * 1024,
   });
   const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(envelope.iv, "base64"));
+  if (envelope.schema === ENVELOPE_SCHEMA_V2) {
+    decipher.setAAD(envelopeAad(envelopeMetadata(envelope)));
+  }
+  // v1 envelopes predate AAD binding. They cannot be retroactively
+  // authenticated without the password (which is required to re-encrypt,
+  // not merely to read), so existing v0.1.3 backups keep decrypting exactly
+  // as before — their routing metadata remains unauthenticated. All new
+  // backups are v2.
   decipher.setAuthTag(Buffer.from(envelope.tag, "base64"));
   const plaintext = Buffer.concat([
     decipher.update(Buffer.from(envelope.ciphertext, "base64")),
@@ -294,12 +348,36 @@ function validateNoteSecrets(note) {
   assert(precommitment === BigInt(note.precommitment), "note secrets do not reproduce precommitment");
 }
 
-async function restoreCommand(options) {
+export async function restoreCommand(options) {
   const input = resolve(required(options, "in"));
   const password = await passphrase(resolve(required(options, "passphrase-file")));
   const envelope = JSON.parse(await readFile(input, "utf8"));
   const plaintext = decryptEnvelope(envelope, password);
   const value = JSON.parse(plaintext.toString("utf8"));
+  if (envelope.schema === ENVELOPE_SCHEMA_V1) {
+    // v1 envelopes predate AAD binding: their kind/wallet/id fields are
+    // plaintext, unauthenticated, and restoreCommand uses exactly those
+    // fields to decide where on disk to write. Decryption alone (which
+    // still works, for backward compatibility with existing v0.1.3-era
+    // backups) proves the password is correct; it proves nothing about
+    // whether those routing fields were tampered with after encryption.
+    // Require the operator to independently assert, out of band, the
+    // wallet/id/kind they actually intend to restore to -- restore then
+    // fails closed unless that matches what the envelope claims, rather
+    // than silently trusting the file. kind matters as much as wallet/id:
+    // it alone selects the destination directory (notes/ vs replacements/)
+    // and which validation runs (validateNoteSecrets only applies to
+    // "deposit"), so flipping it unauthenticated could route a restore
+    // into the wrong secret store or skip a check meant to apply to it.
+    const expectedWallet = safeSegment(required(options, "trust-legacy-wallet"), "trust-legacy-wallet");
+    const expectedId = safeSegment(required(options, "trust-legacy-id"), "trust-legacy-id");
+    const expectedKind = required(options, "trust-legacy-kind");
+    assert(
+      envelope.wallet === expectedWallet && envelope.id === expectedId && envelope.kind === expectedKind,
+      "v1 backup's unauthenticated wallet/id/kind do not match --trust-legacy-wallet/--trust-legacy-id/--trust-legacy-kind; " +
+        "refusing to restore without an explicit, matching operator assertion",
+    );
+  }
   const root = await activeDataRoot(bloomHome(options));
   if (envelope.kind === "deposit") {
     const wallet = safeSegment(envelope.wallet, "wallet");
@@ -1067,6 +1145,9 @@ function usage() {
   return `Usage:
   bloom-privacy-pools backup --wallet W --id ID --out FILE --passphrase-file FILE [--home DIR]
   bloom-privacy-pools restore --in FILE --passphrase-file FILE [--home DIR]
+    (a v1/legacy-schema backup additionally requires --trust-legacy-wallet W --trust-legacy-id ID
+     --trust-legacy-kind deposit|replacement, asserting out of band what its unauthenticated
+     metadata is trusted to claim)
   bloom-privacy-pools verify-artifacts --artifacts DIR
   bloom-privacy-pools prepare --note-wallet W --id ID --signing-wallet W --replacement-id ID --artifacts DIR --replacement-backup FILE --passphrase-file FILE --out FILE [--amount WEI] [--rpc URL] [--home DIR]
   bloom-privacy-pools relay-private --note-wallet W --id ID --replacement-id ID --relayer URL --max-fee-bps BPS --artifacts DIR --replacement-backup FILE --passphrase-file FILE [--retry-ambiguous yes] [--rpc URL] [--home DIR]`;
