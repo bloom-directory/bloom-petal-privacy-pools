@@ -108,23 +108,27 @@ fn params_t4() -> &'static Params {
 }
 
 /// Poseidon over a single input (width t=2).
+#[must_use]
 pub fn hash1(x: U256) -> U256 {
     perm(params_t2(), &[reduce(x)])
 }
 
 /// Poseidon over two inputs (width t=3). Used for precommitments and LeanIMT
 /// internal nodes: `poseidon([a, b])`.
+#[must_use]
 pub fn hash2(a: U256, b: U256) -> U256 {
     perm(params_t3(), &[reduce(a), reduce(b)])
 }
 
 /// Poseidon over three inputs (width t=4). Used for commitments:
 /// `poseidon([value, label, precommitment])`.
+#[must_use]
 pub fn hash3(a: U256, b: U256, c: U256) -> U256 {
     perm(params_t4(), &[reduce(a), reduce(b), reduce(c)])
 }
 
 /// True if `x` is a valid field element (`x < p`).
+#[must_use]
 pub fn in_field(x: U256) -> bool {
     x < FIELD_P
 }

@@ -15,6 +15,7 @@ use crate::protocol::{
 use crate::types::{DepositRequest, DepositStatus, StoredNote, TxRef};
 
 /// Build `deposit(uint256 precommitment)` calldata (4 + 32 bytes).
+#[must_use]
 pub fn build_eth_deposit_calldata(precommitment: U256) -> Vec<u8> {
     let mut data = Vec::with_capacity(36);
     data.extend_from_slice(&deposit_eth_selector());
@@ -73,6 +74,7 @@ pub enum CreateAttempt {
 
 /// Classify an existing note against the requested amount. `existing` is the
 /// previously-stored note for this `<id>`, if any.
+#[must_use]
 pub fn classify_existing(existing: Option<&StoredNote>, requested_amount: U256) -> CreateAttempt {
     let Some(note) = existing else {
         return CreateAttempt::NewDeposit;
@@ -183,9 +185,9 @@ pub fn create(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         wallet: wallet.to_string(),
         asset: "eth".to_string(),
         amount_wei: amount.to_string(),
-        nullifier: format!("0x{:x}", nullifier),
-        secret: format!("0x{:x}", secret),
-        precommitment: format!("0x{:x}", precommitment),
+        nullifier: format!("0x{nullifier:x}"),
+        secret: format!("0x{secret:x}"),
+        precommitment: format!("0x{precommitment:x}"),
         status: "staging".to_string(),
         tx: TxRef {
             chain: CHAIN.to_string(),
