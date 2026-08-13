@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtemp, readFile } from "node:fs/promises";
+import { createCipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -12,6 +13,7 @@ import {
   encryptEnvelope,
   atomicWrite,
   redactPrivateReplacementNote,
+  restoreCommand,
   validateRelayQuote,
   verifiedBackup,
   verifySettlementReceipt,
@@ -32,6 +34,128 @@ test("encrypted note backup round trips", () => {
 test("wrong passphrase cannot decrypt", () => {
   const envelope = encryptEnvelope(Buffer.from("secret"), "a sufficiently long passphrase", {});
   assert.throws(() => decryptEnvelope(envelope, "a different long passphrase"));
+});
+
+test("v2 backup envelope authenticates its own routing metadata", () => {
+  const password = "a sufficiently long passphrase";
+  const plaintext = Buffer.from("secret note material");
+  const envelope = encryptEnvelope(plaintext, password, { kind: "deposit", wallet: "alice", id: "note-1" });
+  assert.equal(envelope.schema, "bloom.privacy-pools.encrypted-note.v2");
+  assert.deepEqual(decryptEnvelope(envelope, password), plaintext);
+
+  // restoreCommand trusts kind/wallet/id (read from the same JSON object) to
+  // decide where on disk to write. None of these are the encryption key, so
+  // an attacker with only file-write access — no password — could edit them
+  // directly. AAD must make that fail authentication before those fields
+  // are ever used for routing.
+  for (const [field, value] of [["kind", "replacement"], ["wallet", "mallory"], ["id", "note-2"]]) {
+    const tampered = { ...envelope, [field]: value };
+    assert.throws(
+      () => decryptEnvelope(tampered, password),
+      /unsupported state|unable to authenticate/i,
+      `mutating ${field} should invalidate the envelope`,
+    );
+  }
+});
+
+test("v1 backup envelopes (no AAD) still decrypt for backward compatibility", () => {
+  // encryptEnvelope always produces v2 now, so this reconstructs the exact
+  // pre-v2 shape by hand to pin the legacy reader path against real
+  // v0.1.3-era backups rather than a self-consistent round trip.
+  const password = "a sufficiently long passphrase";
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(password, salt, 32, { N: 1 << 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const plaintext = Buffer.from("legacy secret");
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const legacyEnvelope = {
+    schema: "bloom.privacy-pools.encrypted-note.v1",
+    cipher: "aes-256-gcm",
+    kdf: { name: "scrypt", N: 131072, r: 8, p: 1, salt: salt.toString("base64") },
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    plaintext_sha256: createHash("sha256").update(plaintext).digest("hex"),
+    kind: "deposit",
+    wallet: "alice",
+    id: "note-1",
+  };
+  assert.deepEqual(decryptEnvelope(legacyEnvelope, password), plaintext);
+});
+
+test("v1 (legacy) backup restore requires an explicit, matching operator assertion", async () => {
+  const password = "a sufficiently long passphrase";
+  const home = await mkdtemp(join(tmpdir(), "privacy-pools-home-"));
+  const hash = "a".repeat(64);
+  await mkdir(`${home}/petals/store/owners`, { recursive: true });
+  await writeFile(`${home}/petals/store/owners/privacy-pools.json`, JSON.stringify({ hash }));
+  const passphraseFile = join(home, "passphrase.txt");
+  await writeFile(passphraseFile, password, { mode: 0o600 });
+
+  // A hand-crafted v1 (no-AAD) envelope, matching real v0.1.3 shape. Its
+  // wallet/id are plaintext and unauthenticated -- exactly what this gate
+  // exists to stop restore from blindly trusting.
+  const salt = randomBytes(16);
+  const iv = randomBytes(12);
+  const key = scryptSync(password, salt, 32, { N: 1 << 17, r: 8, p: 1, maxmem: 256 * 1024 * 1024 });
+  const cipher = createCipheriv("aes-256-gcm", key, iv);
+  const plaintext = Buffer.from(`${JSON.stringify({ nullifier: "0x1", secret: "0x2", remaining_value: "1" })}\n`);
+  const ciphertext = Buffer.concat([cipher.update(plaintext), cipher.final()]);
+  const envelopeIn = join(home, "legacy-replacement.enc.json");
+  await writeFile(envelopeIn, JSON.stringify({
+    schema: "bloom.privacy-pools.encrypted-note.v1",
+    cipher: "aes-256-gcm",
+    kdf: { name: "scrypt", N: 131072, r: 8, p: 1, salt: salt.toString("base64") },
+    iv: iv.toString("base64"),
+    tag: cipher.getAuthTag().toString("base64"),
+    ciphertext: ciphertext.toString("base64"),
+    plaintext_sha256: createHash("sha256").update(plaintext).digest("hex"),
+    kind: "replacement",
+    wallet: "dev",
+    id: "note-2",
+  }));
+
+  await assert.rejects(
+    restoreCommand({ in: envelopeIn, "passphrase-file": passphraseFile, home }),
+    /trust-legacy-wallet/,
+  );
+  await assert.rejects(
+    restoreCommand({
+      in: envelopeIn,
+      "passphrase-file": passphraseFile,
+      home,
+      "trust-legacy-wallet": "mallory",
+      "trust-legacy-id": "note-2",
+      "trust-legacy-kind": "replacement",
+    }),
+    /do not match/,
+  );
+  await assert.rejects(
+    restoreCommand({
+      in: envelopeIn,
+      "passphrase-file": passphraseFile,
+      home,
+      "trust-legacy-wallet": "dev",
+      "trust-legacy-id": "note-2",
+      // kind alone selects the destination directory and which validation
+      // runs -- must be gated exactly like wallet/id, not left implicit.
+      "trust-legacy-kind": "deposit",
+    }),
+    /do not match/,
+  );
+  await restoreCommand({
+    in: envelopeIn,
+    "passphrase-file": passphraseFile,
+    home,
+    "trust-legacy-wallet": "dev",
+    "trust-legacy-id": "note-2",
+    "trust-legacy-kind": "replacement",
+  });
+  const restored = JSON.parse(
+    await readFile(`${home}/petals/data/${hash}/secrets/privacy-pools/replacements/dev/note-2`, "utf8"),
+  );
+  assert.equal(restored.nullifier, "0x1");
 });
 
 const recipient = "0x1111111111111111111111111111111111111111";
@@ -101,6 +225,23 @@ test("durable writes are atomic and identical retries are idempotent", async () 
     writeIdenticalOrCreate(join(directory, "stable.json"), { secret: "changed" }),
     /different durable state/,
   );
+});
+
+test("concurrent exclusive writers: exactly one wins", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "privacy-pools-race-"));
+  const path = join(directory, "note.json");
+  const attempts = 50;
+  const results = await Promise.allSettled(
+    Array.from({ length: attempts }, (_, index) =>
+      atomicWrite(path, Buffer.from(`writer-${index}\n`), { exclusive: true })),
+  );
+  const succeeded = results.filter((result) => result.status === "fulfilled");
+  const failed = results.filter((result) => result.status === "rejected");
+  assert.equal(succeeded.length, 1, `expected exactly one exclusive writer to win, got ${succeeded.length}/${attempts}`);
+  assert.equal(failed.length, attempts - 1);
+  for (const result of failed) assert.match(result.reason.message, /refusing to overwrite/);
+  const finalContent = await readFile(path, "utf8");
+  assert.match(finalContent, /^writer-\d+\n$/, "the file must hold exactly one writer's untorn content");
 });
 
 test("replacement backup is reusable but cannot silently change", async () => {
