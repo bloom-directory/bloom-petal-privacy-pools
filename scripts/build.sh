@@ -2,13 +2,18 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PETAL_REV="b9fc22d6d8211bc41304b38b1ef8b5269c8035bd"
+PETAL_REV="1a1729c1ab5032a26fdb9ad94571ac20edff2062"
 
 if [[ -n "${PETAL_BIN:-}" ]]; then
+  # Explicit override: the caller is responsible for pointing this at a
+  # binary built from PETAL_REV (or a compatible superset of it).
   "$PETAL_BIN" build --root "$ROOT"
-elif command -v petal >/dev/null 2>&1; then
-  petal build --root "$ROOT"
 else
+  # Never trust an ambient `petal` on PATH. A differently-pinned install
+  # (e.g. left behind by a CI step that resolved a stale PETAL_REV, or a
+  # dev's unrelated petal checkout) would silently validate this package
+  # against the wrong SDK/host-capability contract and mask a real
+  # incompatibility as a pass. Always install the pinned revision fresh.
   tool_root="$ROOT/target/petal-tool"
   cargo install \
     --git https://github.com/bloom-directory/petal \

@@ -10,7 +10,7 @@ crate-type = ["rlib"]
 [dependencies]
 alloy-primitives = { version = "=1.6.1", default-features = false, features = ["std"] }
 hex = "0.4"
-petal = { package = "bloom-petal-sdk", git = "https://github.com/bloom-directory/petal", rev = "8c331a040140cb68e8ac46dcf040134a52531c2b" }
+petal = { package = "bloom-petal-sdk", git = "https://github.com/bloom-directory/petal", rev = "1a1729c1ab5032a26fdb9ad94571ac20edff2062" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha3 = "0.10"

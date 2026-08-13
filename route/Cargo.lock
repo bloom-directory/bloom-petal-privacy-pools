@@ -434,7 +434,7 @@ dependencies = [
 [[package]]
 name = "bloom-petal-sdk"
 version = "0.1.0"
-source = "git+https://github.com/bloom-directory/petal?rev=8c331a040140cb68e8ac46dcf040134a52531c2b#8c331a040140cb68e8ac46dcf040134a52531c2b"
+source = "git+https://github.com/bloom-directory/petal?rev=1a1729c1ab5032a26fdb9ad94571ac20edff2062#1a1729c1ab5032a26fdb9ad94571ac20edff2062"
 dependencies = [
  "getrandom 0.2.17",
  "serde",

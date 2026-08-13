@@ -1,6 +1,9 @@
 schema = "bloom.petal.package.v1"
 name = "privacy-pools"
 
+[build]
+command = "scripts/build.sh"
+
 [source]
 kind = "github"
 repository = "bloom-directory/bloom-petal-privacy-pools"
