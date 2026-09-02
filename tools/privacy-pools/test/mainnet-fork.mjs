@@ -7,6 +7,7 @@ import {
   mkdir,
   mkdtemp,
   readFile,
+  rm,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -118,6 +119,7 @@ const account = privateKeyToAccount(ANVIL_KEY);
 const publicClient = createPublicClient({ chain: mainnet, transport: http(rpcUrl) });
 const walletClient = createWalletClient({ account, chain: mainnet, transport: http(rpcUrl) });
 let server;
+let testHome;
 try {
   await waitForRpc(publicClient);
   server = createServer(async (request, response) => {
@@ -179,14 +181,13 @@ try {
   await new Promise((resolvePromise) => server.listen(0, "127.0.0.1", resolvePromise));
   const relayerUrl = `http://127.0.0.1:${server.address().port}`;
 
-  const testHome = await mkdtemp(join(tmpdir(), "privacy-pools-fork-"));
+  testHome = await mkdtemp(join(tmpdir(), "privacy-pools-fork-"));
   const hash = "f".repeat(64);
   const dataRoot = join(testHome, "petals", "data", hash);
   const notePath = join(dataRoot, "secrets/privacy-pools/notes/dev/pp-deposit-1");
   const depositStatusPath = join(dataRoot, "state/privacy-pools/deposits/dev/pp-deposit-1");
-  const recipientPath = join(dataRoot, "secrets/privacy-pools/private-inputs/dev/pp-deposit-1");
   const relayStatusPath = join(dataRoot, "state/privacy-pools/private-relays/dev/pp-deposit-1");
-  for (const path of [notePath, depositStatusPath, recipientPath, relayStatusPath]) await mkdir(dirname(path), { recursive: true });
+  for (const path of [notePath, depositStatusPath, relayStatusPath]) await mkdir(dirname(path), { recursive: true });
   await mkdir(join(testHome, "petals/store/owners"), { recursive: true });
   await writeFile(join(testHome, "petals/store/owners/privacy-pools.json"), JSON.stringify({ hash }));
   await cp(noteSource, notePath);
@@ -195,20 +196,32 @@ try {
   copiedNote.backup_verified = true;
   copiedNote.spent = false;
   await writeFile(notePath, JSON.stringify(copiedNote));
-  await writeFile(recipientPath, JSON.stringify({
-    schema: "bloom.privacy-pools.private-relay-recipient.v1",
-    note_wallet: "dev",
-    note_id: "pp-deposit-1",
-    replacement_id: "fork-replacement",
-    recipient: RECIPIENT,
-  }));
   await writeFile(relayStatusPath, JSON.stringify({
     note_wallet: "dev",
     note_id: "pp-deposit-1",
     replacement_id: "fork-replacement",
-    status: "destination-ready",
+    status: "awaiting-owner-input",
     next: "fork test",
   }));
+  const browserBin = join(testHome, "bin");
+  const browserOpener = join(browserBin, "xdg-open");
+  await mkdir(browserBin, { recursive: true });
+  await writeFile(browserOpener, `#!/usr/bin/env node
+const url = new URL(process.argv[2]);
+const token = url.pathname.split("/").pop();
+fetch(new URL("/submit", url), {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "Origin": url.origin,
+    "X-Private-Input-Token": token,
+  },
+  body: JSON.stringify({ recipient: "${RECIPIENT}" }),
+}).then((response) => {
+  if (!response.ok) process.exitCode = 1;
+});
+`);
+  await chmod(browserOpener, 0o755);
   const passphrase = join(testHome, "passphrase");
   await writeFile(passphrase, "fork testing passphrase\n", { mode: 0o600 });
   await chmod(passphrase, 0o600);
@@ -217,7 +230,6 @@ try {
     cli, "relay-private",
     "--note-wallet", "dev",
     "--id", "pp-deposit-1",
-    "--replacement-id", "fork-replacement",
     "--relayer", relayerUrl,
     "--max-fee-bps", "0",
     "--artifacts", artifacts,
@@ -228,10 +240,11 @@ try {
   ];
   const first = await runCli(args, {
     ...process.env,
+    PATH: `${browserBin}:${process.env.PATH}`,
     BLOOM_PP_FAULT_AFTER: "ambiguous",
   });
   assert.equal(first.signal, "SIGKILL", `expected injected crash; stderr=${first.stderr}`);
-  const second = await runCli(args, { ...process.env });
+  const second = await runCli(args, { ...process.env, PATH: `${browserBin}:${process.env.PATH}` });
   assert.equal(second.status, 0, `resume failed; stderr=${second.stderr}`);
   assert.match(second.stdout, /"settlementFinalized": true/);
   assert.doesNotMatch(`${first.stdout}${first.stderr}${second.stdout}${second.stderr}`, new RegExp(RECIPIENT, "i"));
@@ -241,4 +254,5 @@ try {
 } finally {
   await new Promise((resolvePromise) => server?.close(resolvePromise) ?? resolvePromise());
   anvil.kill("SIGTERM");
+  if (testHome) await rm(testHome, { recursive: true });
 }

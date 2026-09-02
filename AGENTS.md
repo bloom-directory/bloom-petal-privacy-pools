@@ -5,9 +5,8 @@ mainnet. Entrypoint proxy `0x6818809eefce719e480a7526d76bd3e561526b46`; ETH pool
 `0xf241d57c6debae225c0f2e6ea1529373c9a9c9fb`.
 
 It targets `bloom:route@0.1.0` and the canonical SDK/builder. Development uses
-the ignored `local-petal` workspace link; a release must replace that path with
-the immutable revision containing the private-input contract. It does not copy
-WIT, SDK, or builder code.
+the ignored `local-petal` workspace link; releases pin an immutable Petal
+revision. It does not copy WIT, SDK, or builder code.
 
 ## Non-negotiable live-funds rules
 
@@ -38,7 +37,7 @@ as chat or shell-argument input.
 | `/petals/privacy-pools/pool/state.json` | Live pool state (tree size, ASP root, scope) | — |
 | `/petals/privacy-pools/deposits/<wallet>/<id>.json` | Read status (reconciles on-chain) | Stage ETH deposit |
 | `/petals/privacy-pools/notes/<wallet>/<id>.json` | Public note view (no secrets) | — |
-| `/petals/privacy-pools/withdrawals/<wallet>/<id>.json` | Readiness, direct settlement, or redacted private-relay status | Stage a direct withdrawal, or advance a private destination ceremony |
+| `/petals/privacy-pools/withdrawals/<wallet>/<id>.json` | Readiness, direct settlement, or redacted private-relay status | Stage a direct withdrawal, or record public private-relay intent |
 
 ## State machine
 
@@ -71,7 +70,7 @@ as chat or shell-argument input.
 |--------|---------|-------------|
 | `staging` | Placeholder persisted, stage call outcome uncertain | Wait, then re-read. If stuck, use a new `<id>` or ask operator to inspect outbox. |
 | `stage-failed` | Stage call definitively failed | Retry with same `<id>` + same `amount_wei`, or use a new `<id>`. |
-| `staged` | Tx accepted by outbox | Direct owner to `approval_ceremony_url` if approval required. Poll with GET to reconcile. |
+| `staged` | Tx accepted by outbox | Bloom keeps any approval launch URL owner-only. Poll with GET to reconcile. |
 | `confirmed` | Tx mined and `Deposited` log parsed | Confirm that `value`, `label`, and `commitment` are all present, then apply every readiness gate in `WITHDRAWAL.md`. |
 | `failed` | Tx reverted | Terminal. Funds did not move. Use a new `<id>` to retry. |
 
@@ -153,12 +152,11 @@ recomputes the replacement commitment, simulates, and stages through
 replacement note.
 
 The route also supports a distinct `private-relay` mode. The agent-visible
-request has no recipient. Bloom returns a local ceremony URL, binds the entered
-address digest to a separately resolved passkey approval wallet, and releases
-the value only to this petal. An omitted approval wallet is valid only when the
-note wallet is passkey-gated or exactly one passkey wallet exists. The petal
-persists the recipient in the secret namespace and exposes only redacted
-lifecycle state. The local companion uses an fsynced secret journal, reuses the
+request has no recipient and records only public intent. The local companion
+opens a one-shot loopback browser form and writes the address directly into
+its mode-`0600`, fsynced retry journal. This is an agent-blind input channel,
+not a passkey approval or a claim that the displayed context is
+cryptographically bound to eventual execution. The companion reuses the
 same replacement material across proof retries, simulates the exact relay,
 recovers lost responses by matching on-chain events, and waits for finalized
 settlement. It must never print the recipient, proof payload, calldata,
@@ -172,10 +170,10 @@ or infer ids from the secret namespace.
 
 ## Capabilities
 
-Declared in `petal.toml`: `bloom:store`, `bloom:tx.outbox`, `bloom:chain`,
-`bloom:vfs.read` for resolving a direct signing wallet, and
-`bloom:private-input` for the Privacy Pools-only recipient ceremony. No
-`bloom:http` or `bloom:sign`; the tx outbox owns direct owner approval.
+Declared in `petal.toml`: `bloom:store`, `bloom:tx.outbox`, `bloom:chain`, and
+`bloom:vfs.read` for resolving a direct signing wallet. No `bloom:http`,
+private-input, or `bloom:sign` capability is required; the tx outbox owns
+direct owner approval, while the local companion owns private relay input.
 
 ## Route/controller/module shape
 

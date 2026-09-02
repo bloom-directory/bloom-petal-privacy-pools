@@ -9,6 +9,8 @@ import { fileURLToPath } from "node:url";
 import { encodeAbiParameters } from "viem";
 
 import {
+  completePrivateRelayStatus,
+  collectPrivateRecipient,
   decryptEnvelope,
   encryptEnvelope,
   atomicWrite,
@@ -19,6 +21,100 @@ import {
   verifySettlementReceipt,
   writeIdenticalOrCreate,
 } from "../cli.mjs";
+
+test("private relay destination is collected by a one-shot loopback form", async () => {
+  const privateRecipient = "0x1111111111111111111111111111111111111111";
+  let formUrl;
+  const collected = collectPrivateRecipient({
+    amountWei: "250000000000000000",
+    source: "dev/note-1",
+    relayer: "https://relay.example",
+    maxFeeBps: "250",
+    timeoutMs: 2_000,
+    openBrowser: async (url) => {
+      formUrl = url;
+      assert.equal(new URL(url).hostname, "127.0.0.1");
+      assert(!url.includes(privateRecipient));
+      const page = await fetch(url);
+      assert.equal(page.status, 200);
+      assert.equal(page.headers.get("cache-control"), "no-store");
+      assert.match(page.headers.get("content-security-policy"), /default-src 'none'/);
+      const pageBody = await page.text();
+      assert.match(pageBody, /<strong>\/bloom<\/strong> walletFS/);
+      assert.match(pageBody, /href="\/private-input\.css"/);
+      assert.match(pageBody, /src="\/bloom-primary\.svg"/);
+      assert(!pageBody.includes(privateRecipient));
+      const token = new URL(url).pathname.split("/").pop();
+      const origin = new URL(url).origin;
+      const stylesheet = await fetch(`${origin}/private-input.css`);
+      assert.equal(stylesheet.headers.get("content-type"), "text/css; charset=utf-8");
+      assert.match(await stylesheet.text(), /--paper:#f4efe6/);
+      const logo = await fetch(`${origin}/bloom-primary.svg`);
+      assert.equal(logo.headers.get("content-type"), "image/svg+xml");
+      assert.equal((await logo.text()).match(/<path /g)?.length, 7);
+      assert.equal((await fetch(`${origin}/context`)).status, 404);
+      const context = await fetch(`${origin}/context`, {
+        headers: { "X-Private-Input-Token": token },
+      });
+      assert.deepEqual(await context.json(), {
+        network: "Ethereum mainnet",
+        asset: "ETH",
+        amountEth: "0.25 ETH",
+        amountWei: "250000000000000000",
+        source: "dev/note-1",
+        relayer: "https://relay.example",
+        maxFee: "250 bps (2.5%)",
+      });
+      const rejected = await fetch(`${origin}/submit`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Origin": origin,
+          "X-Private-Input-Token": token,
+        },
+        body: JSON.stringify({ recipient: "not-an-address" }),
+      });
+      assert.equal(rejected.status, 400);
+      const accepted = await fetch(`${origin}/submit`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Origin": origin,
+          "X-Private-Input-Token": token,
+        },
+        body: JSON.stringify({ recipient: privateRecipient }),
+      });
+      assert.equal(accepted.status, 204);
+    },
+  });
+  assert.equal(await collected, "0x1111111111111111111111111111111111111111");
+  await assert.rejects(fetch(formUrl));
+});
+
+test("private relay destination form can be cancelled without waiting for expiry", async () => {
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs: 2_000,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        const response = await fetch(new URL("/cancel", url), {
+          method: "POST",
+          headers: {
+            "Origin": parsed.origin,
+            "X-Private-Input-Token": token,
+          },
+        });
+        assert.equal(response.status, 204);
+      },
+    }),
+    /cancelled/,
+  );
+});
 
 test("encrypted note backup round trips", () => {
   const plaintext = Buffer.from('{"nullifier":"secret material"}\n');
@@ -310,5 +406,19 @@ test("private replacement public state removes secrets and transaction correlati
   assert.deepEqual(publicNote, {
     commitment: "0x1234",
     tx: { chain: "mainnet", outbox_id: "private-relay" },
+  });
+});
+
+test("completed private relay status removes ceremony correlation", () => {
+  const publicStatus = completePrivateRelayStatus({
+    status: "pending",
+    approval_wallet: "legacy-wallet",
+    ceremony_url: "http://localhost/legacy-secret",
+    ceremony_operation_id: "operation-1",
+    ceremony_expires_ms: 123,
+  }, 1n);
+  assert.deepEqual(publicStatus, {
+    status: "complete",
+    next: "Settlement finalized. The backed-up replacement note is active.",
   });
 });

@@ -185,19 +185,10 @@ bloom vfs write \
 bloom vfs cat /petals/privacy-pools/withdrawals/<note-wallet>/<id>.json
 ```
 
-Add `"amount_wei":"<wei>"` for a partial withdrawal. Open the returned
-loopback `ceremony_url` yourself, enter the recipient, and approve the displayed
-request with a passkey. Do not paste the address into chat or a VFS command.
-Then repeat the exact same VFS write. The public status becomes
-`destination-ready` but still contains no recipient.
-
-The note wallet and approval wallet are separate identities. If the note wallet
-is not passkey-gated and exactly one passkey wallet exists, Bloom selects it. If
-several passkey wallets exist, include only its local alias in the request:
-
-```json
-{"mode":"private-relay","replacement_id":"<new-unique-id>","approval_wallet":"<passkey-wallet-alias>"}
-```
+Add `"amount_wei":"<wei>"` for a partial withdrawal; if you omit it, the full
+note value is used. The VFS write records only public intent and returns
+`awaiting-owner-input`. It does not launch a Bloom approval or private-input
+ceremony, and there is no second VFS write.
 
 Run the redacting companion:
 
@@ -205,7 +196,6 @@ Run the redacting companion:
 node tools/privacy-pools/cli.mjs relay-private \
   --note-wallet <note-wallet> \
   --id <id> \
-  --replacement-id <new-unique-id> \
   --relayer https://<trusted-relayer> \
   --max-fee-bps <owner-approved-ceiling> \
   --artifacts /secure/path/privacy-pools-artifacts \
@@ -213,8 +203,20 @@ node tools/privacy-pools/cli.mjs relay-private \
   --passphrase-file /secure/passphrase
 ```
 
-The helper reads the address and note directly from the secret store, obtains
-the relayer's details, preloads and verifies circuit artifacts, synchronizes
+The helper reads and validates the replacement id from the public intent
+record; it is not repeated as a command-line argument.
+
+The companion opens a one-shot form bound to `127.0.0.1` and shows the exact
+amount in ETH and wei, asset, source note, relayer origin, and fee ceiling
+before accepting the Ethereum destination. Do not paste the address into chat
+or a VFS command. The form uses a random
+short-lived token, sends the destination only to the same loopback process,
+and closes after one valid submission. This is private input, not transaction
+approval or authentication.
+
+The helper retains the address only in its mode-`0600` retry journal, reads the
+note directly from the secret store, obtains the relayer's details, preloads
+and verifies circuit artifacts, synchronizes
 both trees, and only then requests the short-lived signed fee commitment. It
 generates and locally verifies the proof, exactly simulates and estimates
 `Entrypoint.relay(withdrawal, proof, scope)`, and verifies both the Pool

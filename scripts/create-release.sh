@@ -44,7 +44,7 @@ RELEASE_JSON=$(curl -s -X POST \
   "tag_name": "$TAG",
   "target_commitish": "$COMMIT",
   "name": "$TAG",
-  "body": "## privacy-pools petal $TAG\n\n0xBOW Privacy Pools integration for Ethereum mainnet.\n\n**15 routes** — deposits, notes, direct-withdrawal staging/reconciliation, pool reads, status, protocol\n\n**Local tools**: encrypted note backup/restore, pinned official-SDK prover, artifact verification\n\n**Supported asset**: ETH (native)\n\n**Capabilities**: bloom:store, bloom:tx.outbox, bloom:chain, bloom:vfs.read, bloom:private-input",
+  "body": "## privacy-pools petal $TAG\n\n0xBOW Privacy Pools integration for Ethereum mainnet.\n\n**15 routes** — deposits, notes, direct-withdrawal staging/reconciliation, pool reads, status, protocol\n\n**Local tools**: encrypted note backup/restore, pinned official-SDK prover, artifact verification, loopback private-relay destination form\n\n**Supported asset**: ETH (native)\n\n**Capabilities**: bloom:store, bloom:tx.outbox, bloom:chain, bloom:vfs.read",
   "draft": false,
   "prerelease": false
 }

@@ -3,7 +3,7 @@ petal::route_file!(
     read: |_ctx: &petal::Ctx| petal::read_json_value(&serde_json::json!({
         "petal": "privacy-pools",
         "status": "ok",
-        "description": "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet. Direct withdrawals use Bloom owner approval; recipient-private withdrawals use a passkey-bound local ceremony and protocol relayer without exposing the destination through VFS.",
+        "description": "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet. Direct withdrawals use Bloom owner approval; recipient-private withdrawals use a companion-hosted loopback form and protocol relayer without exposing the destination through VFS.",
         "protocol": {
             "name": "0xBOW Privacy Pools",
             "chain": crate::protocol::CHAIN,
