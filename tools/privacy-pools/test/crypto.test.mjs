@@ -43,6 +43,9 @@ test("private relay destination is collected by a one-shot loopback form", async
       assert.match(pageBody, /<strong>\/bloom<\/strong> walletFS/);
       assert.match(pageBody, /href="\/private-input\.css"/);
       assert.match(pageBody, /src="\/bloom-primary\.svg"/);
+      assert.match(pageBody, /sends it to the selected relayer/);
+      assert.match(pageBody, /records it publicly on Ethereum/);
+      assert.doesNotMatch(pageBody, /goes only to the local Privacy Pools companion/);
       assert(!pageBody.includes(privateRecipient));
       const token = new URL(url).pathname.split("/").pop();
       const origin = new URL(url).origin;
@@ -421,4 +424,55 @@ test("completed private relay status removes ceremony correlation", () => {
     status: "complete",
     next: "Settlement finalized. The backed-up replacement note is active.",
   });
+});
+
+test("completed private relay resume removes a legacy plaintext recipient before returning", async () => {
+  const home = await mkdtemp(join(tmpdir(), "privacy-pools-complete-resume-"));
+  const hash = "a".repeat(64);
+  const root = `${home}/petals/data/${hash}`;
+  const noteWallet = "dev";
+  const id = "note-1";
+  const replacementId = "note-2";
+  const passphraseFile = join(home, "passphrase.txt");
+  const legacyRecipientPath = `${root}/secrets/privacy-pools/private-inputs/${noteWallet}/${id}`;
+
+  await mkdir(`${home}/petals/store/owners`, { recursive: true });
+  await mkdir(`${root}/secrets/privacy-pools/notes/${noteWallet}`, { recursive: true });
+  await mkdir(`${root}/state/privacy-pools/private-relays/${noteWallet}`, { recursive: true });
+  await mkdir(`${root}/secrets/privacy-pools/private-relay-attempts/${noteWallet}`, { recursive: true });
+  await mkdir(`${root}/secrets/privacy-pools/private-inputs/${noteWallet}`, { recursive: true });
+  await writeFile(`${home}/petals/store/owners/privacy-pools.json`, JSON.stringify({ hash }));
+  await writeFile(`${root}/secrets/privacy-pools/notes/${noteWallet}/${id}`, JSON.stringify({
+    backup_verified: true,
+    value: "1000",
+    label: "1",
+    commitment: "0x1",
+  }));
+  await writeFile(`${root}/state/privacy-pools/private-relays/${noteWallet}/${id}`, JSON.stringify({
+    note_wallet: noteWallet,
+    note_id: id,
+    replacement_id: replacementId,
+  }));
+  await writeFile(`${root}/secrets/privacy-pools/private-relay-attempts/${noteWallet}/${id}`, JSON.stringify({
+    phase: "complete",
+    remaining_value_wei: "0",
+  }));
+  await writeFile(legacyRecipientPath, `${recipient}\n`, { mode: 0o600 });
+  await writeFile(passphraseFile, "a sufficiently long passphrase\n", { mode: 0o600 });
+
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL("../cli.mjs", import.meta.url)),
+    "relay-private",
+    "--note-wallet", noteWallet,
+    "--id", id,
+    "--relayer", "https://relay.example",
+    "--max-fee-bps", "250",
+    "--artifacts", join(home, "artifacts"),
+    "--replacement-backup", join(home, "replacement.enc.json"),
+    "--passphrase-file", passphraseFile,
+    "--home", home,
+  ], { encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr);
+  await assert.rejects(readFile(legacyRecipientPath, "utf8"), (error) => error?.code === "ENOENT");
 });

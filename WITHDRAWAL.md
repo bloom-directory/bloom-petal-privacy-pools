@@ -210,9 +210,12 @@ The companion opens a one-shot form bound to `127.0.0.1` and shows the exact
 amount in ETH and wei, asset, source note, relayer origin, and fee ceiling
 before accepting the Ethereum destination. Do not paste the address into chat
 or a VFS command. The form uses a random
-short-lived token, sends the destination only to the same loopback process,
-and closes after one valid submission. This is private input, not transaction
-approval or authentication.
+short-lived token, delivers the browser submission only to the same loopback
+process, and closes after one valid submission. To execute the withdrawal, the
+companion then sends the destination to the selected relayer, and finalized
+settlement records it publicly in the on-chain `WithdrawalRelayed` event.
+“Private” means hidden from chat, VFS, and console output—not from the relayer
+or Ethereum. This is private input, not transaction approval or authentication.
 
 The helper retains the address only in its mode-`0600` retry journal, reads the
 note directly from the secret store, obtains the relayer's details, preloads
@@ -222,8 +225,11 @@ generates and locally verifies the proof, exactly simulates and estimates
 `Entrypoint.relay(withdrawal, proof, scope)`, and verifies both the Pool
 `Withdrawn` event and Entrypoint `WithdrawalRelayed` event at finalized state.
 It does not query the recipient balance. Its output contains only coarse
-working/final booleans. The address, proof, calldata, transaction hash, request
-id, and journal timestamps remain in the secret namespace.
+working/final booleans. It never prints the address, proof, calldata,
+transaction hash, request id, or journal timestamps; locally persisted copies
+remain in the secret namespace. The relayer necessarily receives the address,
+proof, and calldata, while finalized chain data publishes the address and
+transaction hash.
 
 `--max-fee-bps` is mandatory. The helper decodes the signed withdrawal data
 and verifies its recipient, asset, amount, fee, non-zero fee recipient, and

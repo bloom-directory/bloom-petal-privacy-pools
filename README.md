@@ -103,10 +103,13 @@ For a recipient-private withdrawal, the VFS request contains mode, replacement
 id, and an optional amount. Running `relay-private` opens a short-lived form on
 `127.0.0.1`; the owner enters the destination there and it is written directly
 to the companion's mode-`0600` retry journal, never to VFS or stdout. The
-resumable companion precomputes before requesting the short-lived quote,
-proves with `processooor = Entrypoint`, exactly simulates, submits to the
-configured HTTPS relayer, recovers lost responses from chain events, waits for
-finality, and prints only coarse redacted status.
+companion then necessarily sends the destination to the configured HTTPS
+relayer, and finalized settlement publishes it in the on-chain
+`WithdrawalRelayed` event. “Recipient-private” here means hidden from ordinary
+agent-visible surfaces, not hidden from the relayer or Ethereum. The resumable
+companion precomputes before requesting the short-lived quote, proves with
+`processooor = Entrypoint`, exactly simulates, recovers lost responses from
+chain events, waits for finality, and prints only coarse redacted status.
 
 The petal decodes and checks that public body again, including the note's spent
 nullifier, withdrawn value, replacement commitment, context, latest ASP root,

@@ -173,7 +173,7 @@ const PRIVATE_INPUT_HTML = `<!doctype html>
       <section class="intro" aria-labelledby="page-title">
         <p class="eyebrow">Private Petal input</p>
         <h1 id="page-title">Enter it here.</h1>
-        <p class="lede">This destination goes only to the local Privacy Pools companion. It never appears in chat, commands, logs, or VFS state.</p>
+        <p class="lede">This destination stays out of chat, commands, local application logs, and VFS state. To complete the withdrawal, the companion sends it to the selected relayer; settlement records it publicly on Ethereum.</p>
         <div class="trust">
           <div class="trust-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><div><strong>Local and short-lived</strong>The form listens only on this device and closes after one valid address.</div></div>
           <div class="trust-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 20 7v5c0 4.6-3.1 7.5-8 9-4.9-1.5-8-4.4-8-9V7l8-4Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><div><strong>No signature here</strong>The running companion proceeds after entry, but this form does not create a passkey or transaction signature.</div></div>
@@ -193,8 +193,8 @@ const PRIVATE_INPUT_HTML = `<!doctype html>
           </dl>
         </section>
         <form id="form">
-          <fieldset><legend>Ethereum recipient</legend><label>Address<input id="recipient" name="recipient" type="text" inputmode="text" required autocomplete="off" spellcheck="false" placeholder="0x…" pattern="0x[0-9a-fA-F]{40}"></label><p>Check the network, amount, and source above. The address is retained only in the companion's private retry journal.</p></fieldset>
-          <div class="actions"><button id="submit" type="submit" disabled>Use privately</button><button id="cancel" class="secondary" type="button">Cancel</button></div>
+          <fieldset><legend>Ethereum recipient</legend><label>Address<input id="recipient" name="recipient" type="text" inputmode="text" required autocomplete="off" spellcheck="false" placeholder="0x…" pattern="0x[0-9a-fA-F]{40}"></label><p>Check the network, amount, and source above. The local copy is stored only in the companion's private retry journal, then disclosed to the selected relayer and the public chain when the withdrawal proceeds.</p></fieldset>
+          <div class="actions"><button id="submit" type="submit" disabled>Continue to relay</button><button id="cancel" class="secondary" type="button">Cancel</button></div>
         </form>
       </section>
     </div>
@@ -1149,6 +1149,9 @@ async function relayPrivateCommand(options) {
   assert(note.backup_verified === true, "existing note has no verified encrypted backup");
   for (const field of ["value", "label", "commitment"]) assert(note[field], `deposit is missing reconciled ${field}`);
   let journal = await readJsonIfExists(journalPath);
+  await unlink(legacyRecipientPath).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
 
   if (journal?.phase === "complete") {
     privateProgress("complete");
@@ -1216,10 +1219,6 @@ async function relayPrivateCommand(options) {
       parent_id: id,
     });
   }
-
-  await unlink(legacyRecipientPath).catch((error) => {
-    if (error?.code !== "ENOENT") throw error;
-  });
 
   const rpcUrl = options.rpc ?? DEFAULT_RPC;
   const client = createPublicClient({ chain: mainnet, transport: http(rpcUrl) });

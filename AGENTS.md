@@ -154,13 +154,16 @@ replacement note.
 The route also supports a distinct `private-relay` mode. The agent-visible
 request has no recipient and records only public intent. The local companion
 opens a one-shot loopback browser form and writes the address directly into
-its mode-`0600`, fsynced retry journal. This is an agent-blind input channel,
-not a passkey approval or a claim that the displayed context is
-cryptographically bound to eventual execution. The companion reuses the
-same replacement material across proof retries, simulates the exact relay,
-recovers lost responses by matching on-chain events, and waits for finalized
-settlement. It must never print the recipient, proof payload, calldata,
-transaction hash, or exact submission time. There is no `Entrypoint.withdraw`.
+its mode-`0600`, fsynced retry journal. This is an agent-blind input channel:
+the address stays out of chat, VFS, and console output, but the companion
+necessarily sends it to the selected relayer and finalized settlement records
+it publicly in `WithdrawalRelayed`. It is not a passkey approval or a claim
+that the displayed context is cryptographically bound to eventual execution.
+The companion reuses the same replacement material across proof retries,
+simulates the exact relay, recovers lost responses by matching on-chain events,
+and waits for finalized settlement. It must never print the recipient, proof
+payload, calldata, transaction hash, or exact submission time. There is no
+`Entrypoint.withdraw`.
 
 ## Directory listings
 
