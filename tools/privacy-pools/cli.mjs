@@ -19,7 +19,8 @@ import {
 } from "node:fs/promises";
 import { homedir } from "node:os";
 import { dirname, resolve } from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
+import { createServer } from "node:http";
 import { pathToFileURL } from "node:url";
 
 import {
@@ -33,6 +34,8 @@ import {
   createPublicClient,
   decodeAbiParameters,
   encodeFunctionData,
+  formatEther,
+  getAddress,
   http,
   keccak256,
   toHex,
@@ -45,6 +48,8 @@ const FIELD = 218882428718392752222464057452572750885483644004160343436982041865
 const DEFAULT_RPC = "https://ethereum-rpc.publicnode.com";
 const ASP_LEAVES = "https://api.0xbow.io/1/public/mt-leaves";
 const NATIVE_ASSET = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
+const PRIVATE_INPUT_TIMEOUT_MS = 5 * 60 * 1000;
+const PRIVATE_INPUT_MAX_BYTES = 1024;
 const ARTIFACT_HASHES = Object.freeze({
   "withdraw.wasm": "36cda22791def3d520a55c0fc808369cd5849532a75fab65686e666ed3d55c10",
   "withdraw.vkey": "666bd0983b20c1611543b04f7712e067fbe8cad69f07ada8a310837ff398d21e",
@@ -145,6 +150,269 @@ async function activeDataRoot(home) {
 function safeSegment(value, label) {
   assert(/^[A-Za-z0-9._-]{1,128}$/.test(value) && value !== "." && value !== "..", `unsafe ${label}`);
   return value;
+}
+
+const PRIVATE_INPUT_HTML = `<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#f4efe6">
+  <meta name="referrer" content="no-referrer">
+  <title>/bloom — Private relay destination</title>
+  <link rel="icon" href="/bloom-primary.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/private-input.css">
+</head>
+<body>
+  <main class="page">
+    <header class="brand" aria-label="Bloom walletFS">
+      <img src="/bloom-primary.svg" width="30" height="30" alt="">
+      <span><strong>/bloom</strong> walletFS</span>
+    </header>
+    <div class="layout">
+      <section class="intro" aria-labelledby="page-title">
+        <p class="eyebrow">Private Petal input</p>
+        <h1 id="page-title">Enter it here.</h1>
+        <p class="lede">This destination stays out of chat, commands, local application logs, and VFS state. To complete the withdrawal, the companion sends it to the selected relayer; settlement records it publicly on Ethereum.</p>
+        <div class="trust">
+          <div class="trust-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="4" y="10" width="16" height="10" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/></svg><div><strong>Local and short-lived</strong>The form listens only on this device and closes after one valid address.</div></div>
+          <div class="trust-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M12 3 20 7v5c0 4.6-3.1 7.5-8 9-4.9-1.5-8-4.4-8-9V7l8-4Z"/><path d="m8.5 12 2.2 2.2 4.8-5"/></svg><div><strong>No signature here</strong>The running companion proceeds after entry, but this form does not create a passkey or transaction signature.</div></div>
+        </div>
+      </section>
+      <section class="panel">
+        <header class="panel-header"><p class="panel-kicker">Privacy Pools</p><h2 class="panel-title">Withdrawal recipient</h2><p id="message" role="status">Loading request…</p></header>
+        <section class="review" aria-label="Transfer context">
+          <dl>
+            <div><dt>Network</dt><dd id="network"></dd></div>
+            <div><dt>Asset</dt><dd id="asset"></dd></div>
+            <div><dt>Amount</dt><dd id="amountEth"></dd></div>
+            <div><dt>Amount (wei)</dt><dd id="amountWei"></dd></div>
+            <div><dt>Source note</dt><dd id="source"></dd></div>
+            <div><dt>Relayer</dt><dd id="relayer"></dd></div>
+            <div><dt>Maximum fee</dt><dd id="maxFee"></dd></div>
+          </dl>
+        </section>
+        <form id="form">
+          <fieldset><legend>Ethereum recipient</legend><label>Address<input id="recipient" name="recipient" type="text" inputmode="text" required autocomplete="off" spellcheck="false" placeholder="0x…" pattern="0x[0-9a-fA-F]{40}"></label><p>Check the network, amount, and source above. The local copy is stored only in the companion's private retry journal, then disclosed to the selected relayer and the public chain when the withdrawal proceeds.</p></fieldset>
+          <div class="actions"><button id="submit" type="submit" disabled>Continue to relay</button><button id="cancel" class="secondary" type="button">Cancel</button></div>
+        </form>
+      </section>
+    </div>
+  </main>
+<script src="/private-input.js"></script>
+</body>
+</html>`;
+
+const PRIVATE_INPUT_CSS = `:root{--paper:#f4efe6;--surface:#faf7f1;--ink:#15130f;--ink-2:#342d24;--muted:#706757;--rule:#d5c9b6;--rule-2:#c4b59d;--leaf:#526f51;--accent:#8a2a3a;--accent-deep:#5e1a26;--success:#355f47;--error:#7a2230;--serif:"Iowan Old Style","Palatino Linotype",Georgia,serif;--sans:"Avenir Next",Inter,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;--mono:"SFMono-Regular",Consolas,"Liberation Mono",monospace}
+*{box-sizing:border-box}html{min-height:100%;background:var(--paper);color:var(--ink);-webkit-text-size-adjust:100%}
+body{min-height:100vh;margin:0;font-family:var(--sans);font-size:16px;line-height:1.5;-webkit-font-smoothing:antialiased}
+body::before{content:"";position:fixed;inset:0;pointer-events:none;background:linear-gradient(115deg,rgba(255,255,255,.68),transparent 38%),linear-gradient(180deg,rgba(82,111,81,.08),transparent 50%),linear-gradient(0deg,rgba(138,42,58,.055),transparent 38%)}
+body::after{content:"";position:fixed;width:440px;height:440px;right:-180px;top:-190px;border:1px solid rgba(138,42,58,.13);border-radius:50%;box-shadow:0 0 0 72px rgba(138,42,58,.025),0 0 0 144px rgba(82,111,81,.02);pointer-events:none}
+.page{position:relative;z-index:1;width:min(1080px,100%);margin:0 auto;padding:28px clamp(20px,4vw,56px) 56px}.brand{display:inline-flex;align-items:center;gap:10px;color:var(--ink);font-family:var(--mono);font-size:12px;text-transform:uppercase}.brand strong{color:var(--accent-deep)}.brand img{display:block;width:30px;height:30px}
+.layout{display:grid;grid-template-columns:minmax(260px,.72fr) minmax(460px,1fr);gap:clamp(44px,7vw,92px);align-items:start;margin-top:48px}.intro{position:sticky;top:28px;padding-top:12px}.eyebrow{margin:0 0 15px;color:var(--accent);font-family:var(--mono);font-size:11px;letter-spacing:.07em;text-transform:uppercase}
+h1{margin:0;font-family:var(--serif);font-size:clamp(48px,6vw,72px);font-style:italic;font-weight:400;line-height:.96;letter-spacing:-.025em}.lede{margin:22px 0 0;color:var(--ink-2);font-size:17px}.trust{display:grid;gap:14px;margin-top:34px;padding-top:22px;border-top:1px solid var(--rule);color:var(--muted);font-size:13px}.trust strong{display:block;color:var(--ink-2);font-size:14px}.trust-item{display:grid;grid-template-columns:22px 1fr;gap:10px}.trust-item svg{width:19px;color:var(--leaf)}
+.panel{overflow:hidden;border:1px solid var(--rule-2);border-radius:18px;background:rgba(250,247,241,.92);box-shadow:0 24px 70px rgba(52,45,36,.09),0 2px 8px rgba(52,45,36,.04);backdrop-filter:blur(12px)}.panel-header{padding:27px 30px 23px;border-bottom:1px solid var(--rule);background:rgba(236,228,214,.38)}.panel-kicker{margin:0 0 6px;color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase}.panel-title{margin:0;font-family:var(--serif);font-size:30px;font-weight:400}#message{margin:7px 0 0;color:var(--muted);font-size:13px}
+.review{padding:24px 30px;border-bottom:1px solid var(--rule)}.review dl{display:grid;gap:10px;margin:0}.review dl div{display:grid;grid-template-columns:minmax(110px,.42fr) 1fr;gap:16px;padding-bottom:10px;border-bottom:1px solid var(--rule)}.review dl div:last-child{padding-bottom:0;border-bottom:0}.review dt{color:var(--muted);font-family:var(--mono);font-size:10px;letter-spacing:.05em;text-transform:uppercase}.review dd{margin:0;color:var(--ink-2);font-family:var(--mono);font-size:12px;overflow-wrap:anywhere}
+fieldset{margin:0;padding:24px 30px;border:0;border-bottom:1px solid var(--rule)}legend{padding:0;color:var(--ink);font-family:var(--mono);font-size:11px;font-weight:600;letter-spacing:.05em;text-transform:uppercase}label{display:grid;gap:5px;margin-top:13px;color:var(--ink-2);font-size:13px}input{width:100%;padding:11px 12px;border:1px solid var(--rule-2);border-radius:8px;background:#fffdf9;color:var(--ink);font:13px/1.45 var(--mono)}input:focus{border-color:var(--accent);outline:3px solid rgba(138,42,58,.1)}fieldset p{color:var(--muted);font-size:12px}.actions{display:grid;grid-template-columns:1fr auto;gap:10px;padding:26px 30px 30px;background:rgba(236,228,214,.22)}button{min-height:49px;padding:12px 18px;border:0;border-radius:9px;background:var(--accent);color:var(--paper);font:500 12px var(--mono);cursor:pointer;box-shadow:0 8px 20px rgba(94,26,38,.17);transition:transform .16s,background .16s}button:hover:not(:disabled){transform:translateY(-1px);background:var(--accent-deep)}button:disabled{opacity:.48;cursor:wait;box-shadow:none}button.secondary{border:1px solid var(--rule-2);background:transparent;color:var(--ink-2);box-shadow:none}
+@media(max-width:820px){.layout{grid-template-columns:1fr;gap:30px;margin-top:32px}.intro{position:static}.trust{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:560px){.page{padding:19px 14px 28px}h1{font-size:46px}.panel{border-radius:14px}.panel-header,.review,fieldset,.actions{padding-left:20px;padding-right:20px}.actions{grid-template-columns:1fr}.trust{grid-template-columns:1fr}}@media(prefers-reduced-motion:reduce){*{transition:none!important}}`;
+
+const BLOOM_PRIMARY_SVG = `<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024"><g stroke-linejoin="round" stroke-linecap="round"><path d="M 24.58 0 C 96.09 141.31 209.14 141.31 282.62 0" fill="none" stroke="#7a2230" stroke-width="30" transform="translate(512 512) rotate(-72.500) scale(1.24)"></path><path d="M 24.58 0 C 96.09 141.31 209.14 141.31 282.62 0 C 209.14 -141.31 96.09 -141.31 24.58 0 Z" fill="#9d2d3f" transform="translate(512 512) rotate(-12.500) scale(1.24)"></path><path d="M 24.58 0 C 96.09 141.31 209.14 141.31 282.62 0 C 209.14 -141.31 96.09 -141.31 24.58 0 Z" fill="none" stroke="#7a2230" stroke-width="30" transform="translate(512 512) rotate(47.500) scale(1.24)"></path><path d="M 24.58 0 C 96.09 141.31 209.14 141.31 282.62 0 C 209.14 -141.31 96.09 -141.31 24.58 0 Z" fill="#9d2d3f" transform="translate(512 512) rotate(107.500) scale(1.24)"></path><path d="M 24.58 0 C 96.09 141.31 209.14 141.31 282.62 0 C 209.14 -141.31 96.09 -141.31 24.58 0 Z" fill="none" stroke="#7a2230" stroke-width="30" transform="translate(512 512) rotate(167.500) scale(1.24)"></path><path d="M 24.58 0 C 96.09 141.31 209.14 141.31 282.62 0 C 209.14 -141.31 96.09 -141.31 24.58 0 Z" fill="#9d2d3f" transform="translate(512 512) rotate(227.500) scale(1.24)"></path><path d="M 282.62 0 C 209.14 -141.31 96.09 -141.31 24.58 0" fill="none" stroke="#7a2230" stroke-width="30" transform="translate(512 512) rotate(-72.500) scale(1.24)"></path></g></svg>`;
+
+const PRIVATE_INPUT_JS = `(() => {
+  const token = location.pathname.split("/").pop();
+  history.replaceState(null, "", "/");
+  const headers = { "X-Private-Input-Token": token };
+  const message = document.getElementById("message");
+  const submit = document.getElementById("submit");
+  const cancel = document.getElementById("cancel");
+  fetch("/context", { headers }).then((response) => {
+    if (!response.ok) throw new Error("expired");
+    return response.json();
+  }).then((context) => {
+    for (const key of ["network", "asset", "amountEth", "amountWei", "source", "relayer", "maxFee"]) {
+      document.getElementById(key).textContent = context[key];
+    }
+    message.textContent = "Review the transfer, then enter its destination. No passkey or signature is requested.";
+    submit.disabled = false;
+  }).catch(() => { message.textContent = "This form expired. Run the helper again."; });
+  document.getElementById("form").addEventListener("submit", async (event) => {
+    event.preventDefault();
+    submit.disabled = true;
+    try {
+      const response = await fetch("/submit", {
+        method: "POST",
+        headers: { ...headers, "Content-Type": "application/json" },
+        body: JSON.stringify({ recipient: document.getElementById("recipient").value }),
+      });
+      message.textContent = response.ok ? "Destination accepted. You may close this tab." : "Invalid address. Check it and try again.";
+      if (!response.ok) {
+        submit.disabled = false;
+        return;
+      }
+      document.getElementById("recipient").value = "";
+      document.getElementById("recipient").disabled = true;
+    } catch {
+      message.textContent = "This form expired. Run the helper again.";
+    }
+  });
+  cancel.addEventListener("click", async () => {
+    submit.disabled = true;
+    cancel.disabled = true;
+    try {
+      await fetch("/cancel", { method: "POST", headers });
+      message.textContent = "Cancelled. You may close this tab.";
+    } catch {
+      message.textContent = "This form expired. You may close this tab.";
+    }
+  });
+})();`;
+
+function privateInputHeaders(response, contentType) {
+  response.setHeader("Cache-Control", "no-store");
+  response.setHeader("Content-Security-Policy", "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; form-action 'none'; frame-ancestors 'none'; base-uri 'none'");
+  response.setHeader("Cross-Origin-Opener-Policy", "same-origin");
+  response.setHeader("Referrer-Policy", "no-referrer");
+  response.setHeader("X-Content-Type-Options", "nosniff");
+  response.setHeader("Content-Type", contentType);
+}
+
+function tokenMatches(request, token) {
+  const supplied = request.headers["x-private-input-token"];
+  if (typeof supplied !== "string") return false;
+  const left = Buffer.from(supplied);
+  const right = Buffer.from(token);
+  return left.length === right.length && timingSafeEqual(left, right);
+}
+
+async function boundedJson(request) {
+  let size = 0;
+  const chunks = [];
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > PRIVATE_INPUT_MAX_BYTES) fail("private input request is too large");
+    chunks.push(chunk);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString("utf8"));
+}
+
+async function launchBrowser(url) {
+  const command = process.platform === "darwin" ? "/usr/bin/open" : process.platform === "linux" ? "xdg-open" : null;
+  assert(command, "automatic browser launch is unsupported on this platform");
+  await new Promise((resolvePromise, rejectPromise) => {
+    const child = spawn(command, [url], { detached: true, stdio: "ignore" });
+    child.once("error", rejectPromise);
+    child.once("spawn", () => {
+      child.unref();
+      resolvePromise();
+    });
+  });
+}
+
+export async function collectPrivateRecipient({ amountWei, source, relayer, maxFeeBps, openBrowser = launchBrowser, timeoutMs = PRIVATE_INPUT_TIMEOUT_MS }) {
+  assert(/^\d+$/.test(amountWei) && BigInt(amountWei) > 0n, "private relay amount is invalid");
+  assert(/^\d+$/.test(maxFeeBps) && BigInt(maxFeeBps) <= 10_000n, "private relay fee ceiling is invalid");
+  const token = randomBytes(32).toString("base64url");
+  const feePercent = Number(maxFeeBps) / 100;
+  const context = {
+    network: "Ethereum mainnet",
+    asset: "ETH",
+    amountEth: `${formatEther(BigInt(amountWei))} ETH`,
+    amountWei,
+    source,
+    relayer,
+    maxFee: `${maxFeeBps} bps (${feePercent.toLocaleString("en-US", { maximumFractionDigits: 2 })}%)`,
+  };
+
+  return await new Promise((resolvePromise, rejectPromise) => {
+    let settled = false;
+    let accepted = false;
+    let timer;
+    const finish = (error, recipient) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      server.close(() => error ? rejectPromise(error) : resolvePromise(recipient));
+      server.closeIdleConnections();
+    };
+    const server = createServer(async (request, response) => {
+      try {
+        const boundAddress = server.address();
+        const expectedHost = boundAddress && typeof boundAddress !== "string"
+          ? `127.0.0.1:${boundAddress.port}`
+          : null;
+        assert(request.headers.host === expectedHost, "private input host mismatch");
+        if (request.method === "GET" && request.url === `/private-input/${token}`) {
+          privateInputHeaders(response, "text/html; charset=utf-8");
+          response.end(PRIVATE_INPUT_HTML);
+          return;
+        }
+        if (request.method === "GET" && request.url === "/private-input.js") {
+          privateInputHeaders(response, "text/javascript; charset=utf-8");
+          response.end(PRIVATE_INPUT_JS);
+          return;
+        }
+        if (request.method === "GET" && request.url === "/private-input.css") {
+          privateInputHeaders(response, "text/css; charset=utf-8");
+          response.end(PRIVATE_INPUT_CSS);
+          return;
+        }
+        if (request.method === "GET" && request.url === "/bloom-primary.svg") {
+          privateInputHeaders(response, "image/svg+xml");
+          response.end(BLOOM_PRIMARY_SVG);
+          return;
+        }
+        if (request.method === "GET" && request.url === "/context" && tokenMatches(request, token)) {
+          privateInputHeaders(response, "application/json; charset=utf-8");
+          response.end(JSON.stringify(context));
+          return;
+        }
+        if (request.method === "POST" && request.url === "/submit" && tokenMatches(request, token)) {
+          const address = server.address();
+          const origin = address && `http://127.0.0.1:${address.port}`;
+          assert(request.headers.origin === origin, "private input origin mismatch");
+          assert(request.headers["content-type"]?.split(";", 1)[0] === "application/json", "private input must be JSON");
+          const body = await boundedJson(request);
+          assert(typeof body.recipient === "string", "private recipient is missing");
+          const recipient = getAddress(body.recipient.trim());
+          assert(recipient !== "0x0000000000000000000000000000000000000000", "private recipient cannot be the zero address");
+          assert(!accepted, "private input was already accepted");
+          accepted = true;
+          privateInputHeaders(response, "text/plain; charset=utf-8");
+          response.statusCode = 204;
+          response.end(() => finish(null, recipient));
+          return;
+        }
+        if (request.method === "POST" && request.url === "/cancel" && tokenMatches(request, token)) {
+          const address = server.address();
+          const origin = address && `http://127.0.0.1:${address.port}`;
+          assert(request.headers.origin === origin, "private input origin mismatch");
+          assert(!accepted, "private input was already accepted");
+          accepted = true;
+          privateInputHeaders(response, "text/plain; charset=utf-8");
+          response.statusCode = 204;
+          response.end(() => finish(new Error("private destination entry cancelled")));
+          return;
+        }
+        response.statusCode = 404;
+        response.end();
+      } catch {
+        privateInputHeaders(response, "text/plain; charset=utf-8");
+        response.statusCode = 400;
+        response.end("invalid private input");
+      }
+    });
+    server.once("error", (error) => finish(error));
+    server.listen(0, "127.0.0.1", async () => {
+      const address = server.address();
+      try {
+        assert(address && typeof address !== "string", "private input server did not bind a TCP port");
+        timer = setTimeout(() => finish(new Error("private destination form expired; rerun the helper")), timeoutMs);
+        await openBrowser(`http://127.0.0.1:${address.port}/private-input/${token}`);
+      } catch (error) {
+        finish(error);
+      }
+    });
+  });
 }
 
 export async function atomicWrite(path, bytes, { exclusive = false, mode = 0o600 } = {}) {
@@ -744,7 +1012,23 @@ export function verifySettlementReceipt(receipt, journal) {
   assert(words[0] === expected.amount && words[1] === expectedFee, "WithdrawalRelayed amount or fee mismatch");
 }
 
-async function finalizePrivateRelay({ client, journal, journalPath, note, notePath, root, statusPath, recipientPath, resultPath }) {
+export function completePrivateRelayStatus(publicStatus, remainingValue) {
+  publicStatus.status = "complete";
+  scrubLegacyPrivateRelayStatus(publicStatus);
+  publicStatus.next = remainingValue > 0n
+    ? "Settlement finalized. The backed-up replacement note is active."
+    : "Settlement finalized. The original note is fully spent.";
+  return publicStatus;
+}
+
+function scrubLegacyPrivateRelayStatus(publicStatus) {
+  for (const field of ["approval_wallet", "ceremony_url", "ceremony_operation_id", "ceremony_expires_ms"]) {
+    delete publicStatus[field];
+  }
+  return publicStatus;
+}
+
+async function finalizePrivateRelay({ client, journal, journalPath, note, notePath, root, statusPath, resultPath }) {
   journal.phase = "finalizing";
   await persistJournal(journalPath, journal);
   faultAfter("finalizing");
@@ -812,22 +1096,14 @@ async function finalizePrivateRelay({ client, journal, journalPath, note, notePa
     );
   }
 
-  const publicStatus = JSON.parse(await readFile(statusPath, "utf8"));
-  publicStatus.status = "complete";
-  publicStatus.ceremony_url = undefined;
-  publicStatus.ceremony_expires_ms = undefined;
-  publicStatus.next = remainingValue > 0n
-    ? "Settlement finalized. The backed-up replacement note is active."
-    : "Settlement finalized. The original note is fully spent.";
+  const publicStatus = completePrivateRelayStatus(
+    JSON.parse(await readFile(statusPath, "utf8")),
+    remainingValue,
+  );
   await atomicWrite(statusPath, Buffer.from(`${JSON.stringify(publicStatus)}\n`), { mode: 0o644 });
   journal.phase = "complete";
   journal.finalized_block = finalizedBlock.toString();
   await persistJournal(journalPath, journal);
-  try {
-    await unlink(recipientPath);
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
   privateProgress("complete");
   console.log(stringify({
     complete: true,
@@ -842,9 +1118,8 @@ async function relayPrivateCommand(options) {
   privateProgress("starting");
   const noteWallet = safeSegment(required(options, "note-wallet"), "note wallet");
   const id = safeSegment(required(options, "id"), "id");
-  const replacementId = safeSegment(required(options, "replacement-id"), "replacement id");
-  assert(id !== replacementId, "replacement id must differ from the existing note id");
   const relayer = new URL(required(options, "relayer"));
+  assert(!relayer.username && !relayer.password, "relayer URL must not contain credentials");
   assert(
     relayer.protocol === "https:" || (relayer.protocol === "http:" && ["localhost", "127.0.0.1"].includes(relayer.hostname)),
     "relayer must use HTTPS (HTTP is allowed only on loopback)",
@@ -858,34 +1133,42 @@ async function relayPrivateCommand(options) {
   const artifacts = resolve(required(options, "artifacts"));
   const root = await activeDataRoot(bloomHome(options));
   const notePath = `${root}/secrets/privacy-pools/notes/${noteWallet}/${id}`;
-  const recipientPath = `${root}/secrets/privacy-pools/private-inputs/${noteWallet}/${id}`;
+  const statusPath = `${root}/state/privacy-pools/private-relays/${noteWallet}/${id}`;
+  const note = JSON.parse(await readFile(notePath, "utf8"));
+  const publicStatus = scrubLegacyPrivateRelayStatus(JSON.parse(await readFile(statusPath, "utf8")));
+  assert(
+    publicStatus.note_wallet === noteWallet && publicStatus.note_id === id,
+    "private relay status belongs to another note",
+  );
+  const replacementId = safeSegment(publicStatus.replacement_id, "private relay replacement id");
+  assert(id !== replacementId, "replacement id must differ from the existing note id");
   const resultPath = `${root}/secrets/privacy-pools/private-relay-results/${noteWallet}/${id}`;
   const journalPath = `${root}/secrets/privacy-pools/private-relay-attempts/${noteWallet}/${id}`;
   const replacementPath = `${root}/secrets/privacy-pools/replacements/${noteWallet}/${replacementId}`;
-  const statusPath = `${root}/state/privacy-pools/private-relays/${noteWallet}/${id}`;
-  const note = JSON.parse(await readFile(notePath, "utf8"));
+  const legacyRecipientPath = `${root}/secrets/privacy-pools/private-inputs/${noteWallet}/${id}`;
+  assert(note.backup_verified === true, "existing note has no verified encrypted backup");
+  for (const field of ["value", "label", "commitment"]) assert(note[field], `deposit is missing reconciled ${field}`);
   let journal = await readJsonIfExists(journalPath);
+  await unlink(legacyRecipientPath).catch((error) => {
+    if (error?.code !== "ENOENT") throw error;
+  });
 
   if (journal?.phase === "complete") {
-    try {
-      await unlink(recipientPath);
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
-    }
     privateProgress("complete");
     console.log(stringify({ complete: true, settlementFinalized: true, replacementActive: BigInt(journal.remaining_value_wei) > 0n }));
     return;
   }
 
   if (journal === null) {
-    const privateInput = JSON.parse(await readFile(recipientPath, "utf8"));
-    assert(privateInput.schema === "bloom.privacy-pools.private-relay-recipient.v1", "invalid private recipient record");
-    assert(privateInput.note_wallet === noteWallet && privateInput.note_id === id, "private recipient belongs to another note");
-    assert(privateInput.replacement_id === replacementId, "private recipient replacement id mismatch");
-    assert(/^0x[0-9a-fA-F]{40}$/.test(privateInput.recipient), "private recipient is not an Ethereum address");
     const value = BigInt(note.value);
-    const withdrawnValue = privateInput.amount_wei ? BigInt(privateInput.amount_wei) : value;
+    const withdrawnValue = publicStatus.amount_wei ? BigInt(publicStatus.amount_wei) : value;
     assert(withdrawnValue > 0n && withdrawnValue <= value, "withdrawal amount is outside the note value");
+    const recipient = await collectPrivateRecipient({
+      amountWei: withdrawnValue.toString(),
+      source: `${noteWallet}/${id}`,
+      relayer: relayer.origin,
+      maxFeeBps: maxFeeBPS.toString(),
+    });
     const newNullifier = fieldElement();
     let newSecret = fieldElement();
     while (newSecret === newNullifier) newSecret = fieldElement();
@@ -905,12 +1188,15 @@ async function relayPrivateCommand(options) {
       note_wallet: noteWallet,
       note_id: id,
       replacement_id: replacementId,
-      recipient: privateInput.recipient,
+      recipient,
       amount_wei: withdrawnValue.toString(),
       remaining_value_wei: (value - withdrawnValue).toString(),
       replacement,
     };
     await persistJournal(journalPath, journal);
+    publicStatus.status = "processing";
+    publicStatus.next = "The local Privacy Pools helper accepted the destination and is processing the relay.";
+    await atomicWrite(statusPath, Buffer.from(`${JSON.stringify(publicStatus)}\n`), { mode: 0o644 });
     faultAfter("destination-ready");
     await verifiedBackup(replacement, replacementBackup, password, {
       kind: "replacement",
@@ -934,8 +1220,6 @@ async function relayPrivateCommand(options) {
     });
   }
 
-  assert(note.backup_verified === true, "existing note has no verified encrypted backup");
-  for (const field of ["value", "label", "commitment"]) assert(note[field], `deposit is missing reconciled ${field}`);
   const rpcUrl = options.rpc ?? DEFAULT_RPC;
   const client = createPublicClient({ chain: mainnet, transport: http(rpcUrl) });
   const existingNullifierHash = BigInt(poseidon([BigInt(note.nullifier)]));
@@ -968,7 +1252,7 @@ async function relayPrivateCommand(options) {
   }
 
   if (["broadcast", "finalizing"].includes(journal.phase)) {
-    await finalizePrivateRelay({ client, journal, journalPath, note, notePath, root, statusPath, recipientPath, resultPath });
+    await finalizePrivateRelay({ client, journal, journalPath, note, notePath, root, statusPath, resultPath });
     return;
   }
 
@@ -1138,7 +1422,7 @@ async function relayPrivateCommand(options) {
   journal.phase = "broadcast";
   await persistJournal(journalPath, journal);
   faultAfter("broadcast");
-  await finalizePrivateRelay({ client, journal, journalPath, note, notePath, root, statusPath, recipientPath, resultPath });
+  await finalizePrivateRelay({ client, journal, journalPath, note, notePath, root, statusPath, resultPath });
 }
 
 function usage() {
@@ -1150,7 +1434,7 @@ function usage() {
      metadata is trusted to claim)
   bloom-privacy-pools verify-artifacts --artifacts DIR
   bloom-privacy-pools prepare --note-wallet W --id ID --signing-wallet W --replacement-id ID --artifacts DIR --replacement-backup FILE --passphrase-file FILE --out FILE [--amount WEI] [--rpc URL] [--home DIR]
-  bloom-privacy-pools relay-private --note-wallet W --id ID --replacement-id ID --relayer URL --max-fee-bps BPS --artifacts DIR --replacement-backup FILE --passphrase-file FILE [--retry-ambiguous yes] [--rpc URL] [--home DIR]`;
+  bloom-privacy-pools relay-private --note-wallet W --id ID --relayer URL --max-fee-bps BPS --artifacts DIR --replacement-backup FILE --passphrase-file FILE [--retry-ambiguous yes] [--rpc URL] [--home DIR]`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

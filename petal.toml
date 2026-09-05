@@ -12,7 +12,7 @@ repository = "bloom-directory/bloom-petal-privacy-pools"
 summary = "Deposit ETH into the 0xBOW Privacy Pool on Ethereum mainnet, manage encrypted note backups, prepare proofs locally, and validate, stage, and reconcile direct withdrawals through Bloom owner approval."
 
 [caps]
-allowed = ["bloom:store", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read", "bloom:private-input"]
+allowed = ["bloom:store", "bloom:tx.outbox", "bloom:chain", "bloom:vfs.read"]
 
 [store]
 namespaces = ["state"]

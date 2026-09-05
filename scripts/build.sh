@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PETAL_REV="1a1729c1ab5032a26fdb9ad94571ac20edff2062"
+PETAL_REV="864a80b407387871bae06aabe77b91865e55f7bc"
 
 if [[ -n "${PETAL_BIN:-}" ]]; then
   # Explicit override: the caller is responsible for pointing this at a

@@ -15,7 +15,7 @@ env:
   # Must match scripts/build.sh's PETAL_REV. This is the only place CI pins
   # the Petal CLI/SDK revision — keep the two in sync by hand until there's
   # a shared source of truth.
-  PETAL_REV: 1a1729c1ab5032a26fdb9ad94571ac20edff2062
+  PETAL_REV: 864a80b407387871bae06aabe77b91865e55f7bc
 
 jobs:
   rust:

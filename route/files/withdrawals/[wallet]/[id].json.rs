@@ -4,7 +4,6 @@ petal::route_file!(
         "bloom:tx.outbox",
         "bloom:chain",
         "bloom:vfs.read",
-        "bloom:private-input",
     ]),
     read: |ctx: &petal::Ctx| {
         let wallet = match petal::param(ctx, "wallet") { Ok(v) => v, Err(resp) => return resp };

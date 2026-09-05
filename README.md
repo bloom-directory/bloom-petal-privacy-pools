@@ -21,7 +21,8 @@ mainnet.
   Bloom's normal owner-approval ceremony.
 - Start a private relayed withdrawal through VFS without putting the recipient,
   proof, calldata, relayer payload, or transaction hash in an agent-visible
-  route. The owner supplies the recipient in a local passkey ceremony.
+  route. The owner supplies the recipient in a one-shot loopback form opened by
+  the Privacy Pools companion.
 
 ERC-20 pools are not implemented.
 
@@ -37,7 +38,7 @@ ERC-20 pools are not implemented.
 | `deposits/<wallet>/<id>.json` | WRITE | Stage a new ETH deposit |
 | `notes/<wallet>/<id>.json` | GET | Public note view with no secrets |
 | `withdrawals/<wallet>/<id>.json` | GET | Readiness or staged/settled withdrawal state |
-| `withdrawals/<wallet>/<id>.json` | WRITE | Stage a direct withdrawal, or advance a recipient-private relay ceremony |
+| `withdrawals/<wallet>/<id>.json` | WRITE | Stage a direct withdrawal, or record public intent for a recipient-private relay |
 
 The `deposits`, `notes`, and `withdrawals` directories enumerate public wallet
 and id records. Listings never inspect the secret namespace.
@@ -99,13 +100,16 @@ note wallet only when it resolves to the exact processooor encoded in the
 proof.
 
 For a recipient-private withdrawal, the VFS request contains mode, replacement
-id, optional amount, and (only when needed) a passkey-wallet alias. The note
-wallet is not assumed to be the passkey identity. The owner enters the
-destination in the local ceremony; it never returns through VFS. The resumable
-`relay-private` companion precomputes before requesting the short-lived quote,
-proves with `processooor = Entrypoint`, exactly simulates, submits to the
-configured HTTPS relayer, recovers lost responses from chain events, waits for
-finality, and prints only coarse redacted status.
+id, and an optional amount. Running `relay-private` opens a short-lived form on
+`127.0.0.1`; the owner enters the destination there and it is written directly
+to the companion's mode-`0600` retry journal, never to VFS or stdout. The
+companion then necessarily sends the destination to the configured HTTPS
+relayer, and finalized settlement publishes it in the on-chain
+`WithdrawalRelayed` event. “Recipient-private” here means hidden from ordinary
+agent-visible surfaces, not hidden from the relayer or Ethereum. The resumable
+companion precomputes before requesting the short-lived quote, proves with
+`processooor = Entrypoint`, exactly simulates, recovers lost responses from
+chain events, waits for finality, and prints only coarse redacted status.
 
 The petal decodes and checks that public body again, including the note's spent
 nullifier, withdrawn value, replacement commitment, context, latest ASP root,
@@ -129,17 +133,16 @@ not emit a zero-address value that could be mistaken for usable proof input.
 ## Capabilities and security boundary
 
 Declared host capabilities are `bloom:store`, `bloom:tx.outbox`,
-`bloom:chain`, `bloom:vfs.read`, and `bloom:private-input`. VFS read is used
-only to resolve a direct-withdrawal signing wallet. Private input is restricted
-by Bloom to this petal and returns the approved recipient only to the trusted
-route invocation. The petal has no raw HTTP or signing capability. Direct
-owner approval remains in Bloom's outbox; private relay submission is performed
-by the local companion.
+`bloom:chain`, and `bloom:vfs.read`. VFS read is used only to resolve a
+direct-withdrawal signing wallet. The Wasm petal has no raw HTTP or signing
+capability. Direct owner approval remains in Bloom's outbox; private recipient
+collection and relay submission are performed by the local companion.
 
-Secrets are never returned by a VFS route. The companion reads the active local
-secret store and accepts passphrases only via a mode-`0600` file. This prevents
-an ordinary VFS-driving agent from learning the recipient; it does not protect
-against a process with unrestricted read access to the same OS account.
+Secrets are never returned by a VFS route. The companion binds its input form
+only to loopback, protects it with a random one-use URL token, reads the active
+local secret store, and accepts passphrases only via a mode-`0600` file. This
+prevents an ordinary VFS-driving agent from learning the recipient; it does not
+protect against a process with unrestricted access to the same OS account.
 
 ## Development
 

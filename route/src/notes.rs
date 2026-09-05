@@ -7,8 +7,7 @@
 use petal::sdk;
 
 use crate::types::{
-    DepositStatus, NoteView, PrivateRelayRecipient, PrivateRelayStatus, ReplacementNote,
-    StoredNote, WithdrawalStatus,
+    DepositStatus, NoteView, PrivateRelayStatus, ReplacementNote, StoredNote, WithdrawalStatus,
 };
 
 const MAX_NOTE_BYTES: usize = 8 * 1024;
@@ -42,9 +41,6 @@ fn withdrawal_key(wallet: &str, id: &str) -> String {
 }
 fn private_relay_key(wallet: &str, id: &str) -> String {
     format!("privacy-pools/private-relays/{wallet}/{id}")
-}
-fn private_recipient_key(wallet: &str, id: &str) -> String {
-    format!("privacy-pools/private-inputs/{wallet}/{id}")
 }
 
 /// Store keyed by the user-chosen id (the durable, caller-facing key).
@@ -218,18 +214,4 @@ pub fn load_private_relay(wallet: &str, id: &str) -> Result<Option<PrivateRelayS
         Err(petal::SdkError::Host(petal::HostStatus::NotFound)) => Ok(None),
         Err(e) => Err(e.message()),
     }
-}
-
-pub fn store_private_recipient(recipient: &PrivateRelayRecipient) -> Result<(), String> {
-    let bytes = serde_json::to_vec(recipient)
-        .map_err(|e| format!("private relay recipient serialize: {e}"))?;
-    let key = private_recipient_key(&recipient.note_wallet, &recipient.note_id);
-    if let Some(existing) = read_secret(&key, MAX_NOTE_BYTES)? {
-        return if existing == bytes {
-            Ok(())
-        } else {
-            Err("a different private recipient is already stored for this note".into())
-        };
-    }
-    sdk::store_put_new(&key, &bytes, true).map_err(|e| e.message())
 }
