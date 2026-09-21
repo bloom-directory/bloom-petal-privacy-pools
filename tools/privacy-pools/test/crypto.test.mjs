@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -92,6 +93,87 @@ test("private relay destination is collected by a one-shot loopback form", async
   });
   assert.equal(await collected, "0x1111111111111111111111111111111111111111");
   await assert.rejects(fetch(formUrl));
+});
+
+// The form's only defences against another local process are the token, the
+// `Origin` check that stops a browser page on another origin from posting, and
+// the `Host` check that stops a DNS-rebinding name from resolving here. Each
+// is asserted directly, because a passing happy path proves none of them.
+
+function rawGet(origin, path, host) {
+  const url = new URL(path, origin);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const call = httpRequest(
+      { host: url.hostname, port: url.port, path: url.pathname, method: "GET", headers: { Host: host } },
+      (response) => {
+        response.resume();
+        response.once("end", () => resolvePromise(response.statusCode));
+      },
+    );
+    call.once("error", rejectPromise);
+    call.end();
+  });
+}
+
+test("private relay destination form refuses a cross-origin submission", async () => {
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs: 2_000,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        for (const origin of ["https://evil.example", "http://127.0.0.1:1", undefined]) {
+          const response = await fetch(new URL("/submit", url), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Private-Input-Token": token,
+              ...(origin ? { Origin: origin } : {}),
+            },
+            body: JSON.stringify({ recipient: "0x2222222222222222222222222222222222222222" }),
+          });
+          assert.equal(response.status, 400, `origin ${origin} must be refused`);
+        }
+        const cancelled = await fetch(new URL("/cancel", url), {
+          method: "POST",
+          headers: { Origin: parsed.origin, "X-Private-Input-Token": token },
+        });
+        assert.equal(cancelled.status, 204);
+      },
+    }),
+    /cancelled/,
+  );
+});
+
+test("private relay destination form refuses a foreign Host header", async () => {
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs: 2_000,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        // A rebound name reaches this port with its own Host, so the page must
+        // not be served to it even though the path carries the right token.
+        assert.equal(await rawGet(parsed.origin, parsed.pathname, `rebound.example:${parsed.port}`), 400);
+        assert.equal(await rawGet(parsed.origin, parsed.pathname, `localhost:${parsed.port}`), 400);
+        assert.equal(await rawGet(parsed.origin, parsed.pathname, `127.0.0.1:${parsed.port}`), 200);
+        const cancelled = await fetch(new URL("/cancel", url), {
+          method: "POST",
+          headers: { Origin: parsed.origin, "X-Private-Input-Token": token },
+        });
+        assert.equal(cancelled.status, 204);
+      },
+    }),
+    /cancelled/,
+  );
 });
 
 test("private relay destination form can be cancelled without waiting for expiry", async () => {

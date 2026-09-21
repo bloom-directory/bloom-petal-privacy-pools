@@ -177,6 +177,10 @@ Declared in `petal.toml`: `bloom:store`, `bloom:tx.outbox`, `bloom:chain`, and
 `bloom:vfs.read` for resolving a direct signing wallet. No `bloom:http`,
 private-input, or `bloom:sign` capability is required; the tx outbox owns
 direct owner approval, while the local companion owns private relay input.
+That input form is hidden from an agent driving VFS, not from a process with
+shell access to the same OS account: the form's one-use token reaches the
+browser on its command line, so such a process can substitute the destination,
+not merely learn it. See README, "Capabilities and security boundary".
 
 ## Route/controller/module shape
 

@@ -44,6 +44,29 @@ jobs:
       - name: route architecture
         run: scripts/check-route-architecture.sh
 
+  companion:
+    name: companion tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # The companion holds the private-relay input form, the retry journal and
+      # the settlement checks. None of it is Rust, so without this job its test
+      # suite runs nowhere.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: tools/privacy-pools/package-lock.json
+
+      - name: Install companion dependencies
+        run: npm ci
+        working-directory: tools/privacy-pools
+
+      - name: Companion tests
+        run: npm test
+        working-directory: tools/privacy-pools
+
   build:
     name: petal build · check
     runs-on: ubuntu-latest

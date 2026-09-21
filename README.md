@@ -140,9 +140,17 @@ collection and relay submission are performed by the local companion.
 
 Secrets are never returned by a VFS route. The companion binds its input form
 only to loopback, protects it with a random one-use URL token, reads the active
-local secret store, and accepts passphrases only via a mode-`0600` file. This
-prevents an ordinary VFS-driving agent from learning the recipient; it does not
-protect against a process with unrestricted access to the same OS account.
+local secret store, and accepts passphrases only via a mode-`0600` file. The
+form also refuses a request whose `Origin` is not its own and whose `Host` is
+not `127.0.0.1:<port>`, so another web page or a rebound DNS name cannot reach
+it.
+
+None of that is a defence against another process on the same OS account. The
+one-use token is handed to the browser on its command line, so anything that
+can read the local process list can read the token and post its own address
+before the owner does. State the boundary precisely: this hides the destination
+from an agent driving VFS, and a process with shell access to the same account
+can **substitute** the destination, not merely learn it.
 
 ## Development
 
