@@ -123,8 +123,10 @@ pub fn context_hash(processooor: Address, data: &[u8], scope: U256) -> U256 {
 }
 
 fn wallet_address(wallet: &str) -> Result<Address, String> {
+    // Account 0 holds the key exact signing uses; the wallet-level `address`
+    // leaf no longer exists on current Bloom.
     let bytes =
-        sdk::vfs_read(&format!("wallets/{wallet}/address"), 128).map_err(|e| e.message())?;
+        sdk::vfs_read(&format!("wallets/{wallet}/0/address.evm"), 128).map_err(|e| e.message())?;
     let value = std::str::from_utf8(&bytes)
         .map_err(|_| "wallet address is not UTF-8")?
         .trim();
