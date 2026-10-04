@@ -201,6 +201,45 @@ test("private relay destination form can be cancelled without waiting for expiry
   );
 });
 
+test("private relay destination form expires on time while a submission body is held open", { timeout: 5_000 }, async () => {
+  const timeoutMs = 300;
+  let stalled;
+  const started = Date.now();
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        // Send headers and part of the body, then never finish it.
+        stalled = httpRequest({
+          host: parsed.hostname,
+          port: parsed.port,
+          path: "/submit",
+          method: "POST",
+          headers: {
+            "Origin": parsed.origin,
+            "Content-Type": "application/json",
+            "Content-Length": "200",
+            "X-Private-Input-Token": token,
+          },
+        });
+        stalled.on("error", () => {});
+        stalled.write('{"recipient":"0x');
+        stalled.flushHeaders();
+      },
+    }),
+    /expired/,
+  );
+  const elapsed = Date.now() - started;
+  stalled.destroy();
+  assert(elapsed < timeoutMs + 1_000, `settled after ${elapsed} ms`);
+});
+
 test("encrypted note backup round trips", () => {
   const plaintext = Buffer.from('{"nullifier":"secret material"}\n');
   const envelope = encryptEnvelope(plaintext, "a sufficiently long passphrase", {
