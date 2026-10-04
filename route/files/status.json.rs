@@ -18,7 +18,7 @@ petal::route_file!(
                 "decimals": 18,
             }
         ],
-        "canonical_route": "deposits/<wallet>/<id>.json",
+        "canonical_route": "deposits/<wallet>/<index>/<id>.json",
         "operations": [
             "eth-deposit",
             "deposit-read-and-reconcile",

@@ -12,7 +12,8 @@ petal::route_file!(
     },
     write: |ctx: &petal::Ctx, body: &[u8]| {
         let wallet = match petal::param(ctx, "wallet") { Ok(v) => v, Err(resp) => return resp };
+        let index = match petal::param(ctx, "index") { Ok(v) => v, Err(resp) => return resp };
         let id = match petal::param(ctx, "id") { Ok(v) => v, Err(resp) => return resp };
-        crate::withdrawal::stage(wallet, id, body)
+        crate::withdrawal::stage(wallet, index, id, body)
     }
 );

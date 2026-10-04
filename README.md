@@ -34,20 +34,21 @@ ERC-20 pools are not implemented.
 | `protocol.json` | GET | Addresses, hashes, and supported call shapes |
 | `pool/config.json` | GET | Live minimum deposit and fee configuration |
 | `pool/state.json` | GET | Live tree size, roots, and scope |
-| `deposits/<wallet>/<id>.json` | GET | Reconcile and read deposit state |
-| `deposits/<wallet>/<id>.json` | WRITE | Stage a new ETH deposit |
-| `notes/<wallet>/<id>.json` | GET | Public note view with no secrets |
-| `withdrawals/<wallet>/<id>.json` | GET | Readiness or staged/settled withdrawal state |
-| `withdrawals/<wallet>/<id>.json` | WRITE | Stage a direct withdrawal, or record public intent for a recipient-private relay |
+| `deposits/<wallet>/<index>/<id>.json` | GET | Reconcile and read deposit state |
+| `deposits/<wallet>/<index>/<id>.json` | WRITE | Stage a new ETH deposit |
+| `notes/<wallet>/<index>/<id>.json` | GET | Public note view with no secrets |
+| `withdrawals/<wallet>/<index>/<id>.json` | GET | Readiness or staged/settled withdrawal state |
+| `withdrawals/<wallet>/<index>/<id>.json` | WRITE | Stage a direct withdrawal, or record public intent for a recipient-private relay |
 
-The `deposits`, `notes`, and `withdrawals` directories enumerate public wallet
-and id records. Listings never inspect the secret namespace.
+`<wallet>/<index>` selects one Bloom account. Bloom lists wallets and accounts
+and keeps a separate private store for each account; the account's own records
+list its ids. Listings never inspect the secret namespace.
 
 ## Deposit
 
 ```sh
 bloom vfs write \
-  /petals/privacy-pools/deposits/my-wallet/deposit-001.json \
+  /petals/privacy-pools/deposits/my-wallet/0/deposit-001.json \
   --data '{"amount_wei":"10000000000000000","asset":"eth"}'
 ```
 
@@ -95,9 +96,8 @@ bloom-privacy-pools relay-private
 `prepare` uses `@0xbow/privacy-pools-core-sdk@1.4.0`, verifies the official
 withdrawal artifact hashes, fetches ordered ASP/state leaves, proves locally,
 simulates, backs up replacement secrets, and outputs a public write body for
-the withdrawal route. The signing wallet is explicit and may differ from the
-note wallet only when it resolves to the exact processooor encoded in the
-proof.
+the withdrawal route. The account that holds the note signs the withdrawal,
+so its address is the processooor encoded in the proof.
 
 For a recipient-private withdrawal, the VFS request contains mode, replacement
 id, and an optional amount. Running `relay-private` opens a short-lived form on
@@ -133,8 +133,8 @@ not emit a zero-address value that could be mistaken for usable proof input.
 ## Capabilities and security boundary
 
 Declared host capabilities are `bloom:store`, `bloom:tx.outbox`,
-`bloom:chain`, and `bloom:vfs.read`. VFS read is used only to resolve a
-direct-withdrawal signing wallet. The Wasm petal has no raw HTTP or signing
+`bloom:chain`, and `bloom:vfs.read`. VFS read is used only to resolve the
+selected account's address for a direct withdrawal. The Wasm petal has no raw HTTP or signing
 capability. Direct owner approval remains in Bloom's outbox; private recipient
 collection and relay submission are performed by the local companion.
 

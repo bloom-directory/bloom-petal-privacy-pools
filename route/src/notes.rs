@@ -2,7 +2,8 @@
 //!
 //! Notes (with `nullifier`/`secret`) live in the **secrets** namespace; public
 //! deposit status lives in the **state** namespace. Keys are namespaced under
-//! `privacy-pools/...` so they never collide with another petal.
+//! `privacy-pools/...` so they never collide with another petal. Bloom keeps a
+//! separate store for each selected wallet/index account.
 
 use petal::sdk;
 
@@ -25,6 +26,17 @@ fn check_segment(name: &str, value: &str) -> Result<(), String> {
 pub fn validate_idents(wallet: &str, id: &str) -> Result<(), String> {
     check_segment("wallet", wallet)?;
     check_segment("id", id)
+}
+
+/// A Bloom account number: canonical decimal u32, as the host accepts it.
+pub fn account_index(value: &str) -> Result<u32, String> {
+    let canonical = !value.is_empty()
+        && value.bytes().all(|b| b.is_ascii_digit())
+        && (value == "0" || !value.starts_with('0'));
+    canonical
+        .then(|| value.parse().ok())
+        .flatten()
+        .ok_or_else(|| "invalid account index: must be a canonical decimal number".into())
 }
 
 fn note_key(wallet: &str, id: &str) -> String {
@@ -123,24 +135,6 @@ fn listed_suffixes(prefix: &str) -> Result<Vec<String>, String> {
     Ok(values)
 }
 
-/// Wallet aliases with at least one public deposit record.
-pub fn list_wallets() -> Result<Vec<String>, String> {
-    let prefix = "privacy-pools/deposits/";
-    let mut wallets = sdk::store_list(prefix, 256 * 1024)
-        .map_err(|e| e.message())?
-        .into_iter()
-        .filter_map(|key| {
-            key.strip_prefix(prefix)
-                .and_then(|rest| rest.split('/').next())
-                .filter(|wallet| !wallet.is_empty())
-                .map(str::to_owned)
-        })
-        .collect::<Vec<_>>();
-    wallets.sort();
-    wallets.dedup();
-    Ok(wallets)
-}
-
 /// Deposit ids for one wallet, derived only from the public state namespace.
 pub fn list_ids(wallet: &str) -> Result<Vec<String>, String> {
     validate_idents(wallet, "list")?;
@@ -213,5 +207,30 @@ pub fn load_private_relay(wallet: &str, id: &str) -> Result<Option<PrivateRelayS
             .map_err(|e| format!("private relay parse: {e}")),
         Err(petal::SdkError::Host(petal::HostStatus::NotFound)) => Ok(None),
         Err(e) => Err(e.message()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::account_index;
+
+    #[test]
+    fn account_index_accepts_only_canonical_u32_decimals() {
+        assert_eq!(account_index("0"), Ok(0));
+        assert_eq!(account_index("7"), Ok(7));
+        assert_eq!(account_index("4294967295"), Ok(u32::MAX));
+        for bad in [
+            "",
+            "00",
+            "01",
+            "+1",
+            "-1",
+            "1a",
+            "4294967296",
+            "0/../1",
+            " 1",
+        ] {
+            assert!(account_index(bad).is_err(), "{bad:?} was accepted");
+        }
     }
 }

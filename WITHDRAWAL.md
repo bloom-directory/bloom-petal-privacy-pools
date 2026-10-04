@@ -39,6 +39,30 @@ node tools/privacy-pools/cli.mjs verify-artifacts \
   --artifacts /secure/path/privacy-pools-artifacts
 ```
 
+## Upgrading from a release without account routes
+
+Routes now select an account as `<wallet>/<index>`, and Bloom keeps a separate
+store for each account. Bloom does not move notes from an earlier release's
+package-level store into an account. Before upgrading, finish or reconcile
+pending deposits and withdrawals with the installed release and keep a verified
+backup of every note.
+
+A note left in the old store can still be recovered. Its directory is
+`~/.bloom/petals/data/<package-hash>/`. Back it up from there, then restore it
+into the account that should hold and sign for it:
+
+```sh
+node tools/privacy-pools/cli.mjs backup \
+  --wallet <wallet> --id <id> --legacy-package <package-hash> \
+  --out /secure/backups/<id>.note.enc --passphrase-file /secure/passphrase
+
+node tools/privacy-pools/cli.mjs restore \
+  --in /secure/backups/<id>.note.enc --index <index> \
+  --passphrase-file /secure/passphrase
+```
+
+Then read the deposit route to reconcile its public fields.
+
 ## 1. Reconcile and back up the deposit
 
 First read the deposit. This now falls back to a direct Ethereum receipt when
@@ -46,14 +70,15 @@ an older Bloom receipt omitted logs, and it checks the spent-nullifier mapping
 on-chain without returning the private nullifier.
 
 ```sh
-bloom vfs cat /petals/privacy-pools/deposits/<note-wallet>/<id>.json
+bloom vfs cat /petals/privacy-pools/deposits/<wallet>/<index>/<id>.json
 ```
 
 Create a mode-`0600` passphrase file, then make and verify the encrypted backup:
 
 ```sh
 node tools/privacy-pools/cli.mjs backup \
-  --wallet <note-wallet> \
+  --wallet <wallet> \
+  --index <index> \
   --id <id> \
   --out /secure/backups/<id>.note.enc \
   --passphrase-file /secure/passphrase
@@ -66,18 +91,19 @@ refuses to replace a different existing note:
 ```sh
 node tools/privacy-pools/cli.mjs restore \
   --in /secure/backups/<id>.note.enc \
+  --index <index> \
   --passphrase-file /secure/passphrase
 ```
 
 ## 2. Inspect readiness
 
 ```sh
-bloom vfs cat /petals/privacy-pools/withdrawals/<note-wallet>/<id>.json
+bloom vfs cat /petals/privacy-pools/withdrawals/<wallet>/<index>/<id>.json
 ```
 
 The preview is deliberately incomplete. In particular,
-`withdrawal_proof_input.public_signals.context` remains `null` until a real
-signing wallet/processooor is selected. The route never emits a zero-address
+`withdrawal_proof_input.public_signals.context` remains `null` until the
+companion proves for the account's processooor address. The route never emits a zero-address
 placeholder that could be mistaken for a usable context.
 
 Readiness requires:
@@ -93,14 +119,14 @@ Readiness requires:
 
 ## 3. Prepare a direct withdrawal
 
-The deposit alias and signing alias are separate. They may differ only when the
-selected signing wallet resolves to the exact processooor encoded in the proof.
+The account that holds the note signs the withdrawal. Its address is the
+processooor encoded in the proof.
 
 ```sh
 node tools/privacy-pools/cli.mjs prepare \
-  --note-wallet <note-wallet> \
+  --wallet <wallet> \
+  --index <index> \
   --id <id> \
-  --signing-wallet <signing-wallet> \
   --replacement-id <new-unique-id> \
   --artifacts /secure/path/privacy-pools-artifacts \
   --replacement-backup /secure/backups/<new-unique-id>.note.enc \
@@ -111,7 +137,7 @@ node tools/privacy-pools/cli.mjs prepare \
 Omit `--amount` for a full withdrawal or add `--amount <wei>` for a partial
 withdrawal. The tool:
 
-- resolves the signing wallet address;
+- reads the account address from `/wallets/<wallet>/<index>/address.evm`;
 - fetches fresh `stateTreeLeaves` and `aspLeaves` from the public 0xBOW ASP;
 - verifies state and ASP roots against the contracts;
 - verifies the note commitment and on-chain unspent state;
@@ -130,17 +156,17 @@ remaining value is zero; for a partial withdrawal it becomes a new note under
 
 ```sh
 bloom vfs write \
-  /petals/privacy-pools/withdrawals/<note-wallet>/<id>.json \
+  /petals/privacy-pools/withdrawals/<wallet>/<index>/<id>.json \
   < /secure/work/<id>-stage.json
 
-bloom vfs cat /petals/privacy-pools/withdrawals/<note-wallet>/<id>.json
-bloom wallet confirm <signing-wallet> mainnet <outbox-id>
+bloom vfs cat /petals/privacy-pools/withdrawals/<wallet>/<index>/<id>.json
+bloom wallet confirm <wallet> mainnet <outbox-id>
 ```
 
 Before staging, the petal independently:
 
 - decodes the exact direct-withdrawal ABI shape;
-- checks the processooor against the signing wallet;
+- checks the processooor against the selected account's address;
 - recomputes `Poseidon(nullifier)` from the private note;
 - checks the proof's value, context, and latest ASP root;
 - recomputes the replacement commitment from its private secrets;
@@ -157,7 +183,7 @@ bytes to the same private relay.
 Poll the withdrawal path after mining:
 
 ```sh
-bloom vfs cat /petals/privacy-pools/withdrawals/<note-wallet>/<id>.json
+bloom vfs cat /petals/privacy-pools/withdrawals/<wallet>/<index>/<id>.json
 ```
 
 The petal marks `settlement_verified: true` only after all of these pass:
@@ -179,10 +205,10 @@ First let the agent initiate the flow without an address:
 
 ```sh
 bloom vfs write \
-  /petals/privacy-pools/withdrawals/<note-wallet>/<id>.json \
+  /petals/privacy-pools/withdrawals/<wallet>/<index>/<id>.json \
   --data '{"mode":"private-relay","replacement_id":"<new-unique-id>"}'
 
-bloom vfs cat /petals/privacy-pools/withdrawals/<note-wallet>/<id>.json
+bloom vfs cat /petals/privacy-pools/withdrawals/<wallet>/<index>/<id>.json
 ```
 
 Add `"amount_wei":"<wei>"` for a partial withdrawal; if you omit it, the full
@@ -194,7 +220,8 @@ Run the redacting companion:
 
 ```sh
 node tools/privacy-pools/cli.mjs relay-private \
-  --note-wallet <note-wallet> \
+  --wallet <wallet> \
+  --index <index> \
   --id <id> \
   --relayer https://<trusted-relayer> \
   --max-fee-bps <owner-approved-ceiling> \

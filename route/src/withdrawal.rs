@@ -122,11 +122,11 @@ pub fn context_hash(processooor: Address, data: &[u8], scope: U256) -> U256 {
     U256::from_be_bytes(bytes) % FIELD_P
 }
 
-fn wallet_address(wallet: &str) -> Result<Address, String> {
-    // Account 0 holds the key exact signing uses; the wallet-level `address`
-    // leaf no longer exists on current Bloom.
-    let bytes =
-        sdk::vfs_read(&format!("wallets/{wallet}/0/address.evm"), 128).map_err(|e| e.message())?;
+/// The selected account's EVM address. Bloom signs a staged transaction with
+/// the route's account and refuses VFS reads of any other account.
+fn account_address(wallet: &str, index: u32) -> Result<Address, String> {
+    let bytes = sdk::vfs_read(&format!("wallets/{wallet}/{index}/address.evm"), 128)
+        .map_err(|e| e.message())?;
     let value = std::str::from_utf8(&bytes)
         .map_err(|_| "wallet address is not UTF-8")?
         .trim();
@@ -141,7 +141,7 @@ fn preview_next(unspent: bool, backup_verified: bool) -> &'static str {
     } else if !backup_verified {
         "Create and verify an encrypted note backup with tools/privacy-pools backup before proving."
     } else {
-        "Run tools/privacy-pools prepare, then write its public stage request back to this path. Context remains null until the real signing wallet/processooor is selected."
+        "Run tools/privacy-pools prepare for this wallet and account, then write its public stage request back to this path. The account's own address is the processooor."
     }
 }
 
@@ -303,10 +303,14 @@ pub fn read(wallet: &str, id: &str) -> DispatchResponse {
     }
 }
 
-pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn stage(wallet: &str, index: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = notes::validate_idents(wallet, id) {
         return err(-3, e);
     }
+    let index = match notes::account_index(index) {
+        Ok(index) => index,
+        Err(e) => return err(-3, e),
+    };
     if body.len() > MAX_REQUEST_BYTES {
         return err(-3, "withdrawal request body is too large");
     }
@@ -325,7 +329,7 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         Ok(request) => request,
         Err(e) => return err(-3, format!("invalid withdrawal request JSON: {e}")),
     };
-    if let Err(e) = notes::validate_idents(&request.signing_wallet, &request.replacement_id) {
+    if let Err(e) = notes::validate_idents(wallet, &request.replacement_id) {
         return err(-3, e);
     }
 
@@ -374,14 +378,14 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
             "note backup has not been verified; run the local backup tool first",
         );
     }
-    let expected_processooor = match wallet_address(&request.signing_wallet) {
+    let expected_processooor = match account_address(wallet, index) {
         Ok(address) => address,
         Err(e) => return err(-4, e),
     };
     if call.processooor != expected_processooor {
         return err(
             -3,
-            "calldata processooor does not match the signing wallet address",
+            "calldata processooor does not match this account's address",
         );
     }
     let existing_nullifier = match parse_u256(&note.nullifier, "stored nullifier") {
@@ -429,7 +433,6 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     let mut status = WithdrawalStatus {
         note_wallet: wallet.to_string(),
         note_id: id.to_string(),
-        signing_wallet: request.signing_wallet.clone(),
         processooor: format!("{:?}", call.processooor),
         withdrawal_value_wei: call.public_signals[2].to_string(),
         existing_nullifier_hash: as_hex(call.public_signals[1]),
@@ -458,7 +461,7 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     }
 
     let staged = match sdk::tx_stage(&EvmTransaction {
-        wallet: request.signing_wallet,
+        wallet: wallet.to_string(),
         chain: CHAIN.into(),
         to: format!("{POOL_ETH:?}"),
         value_wei: "0".into(),
@@ -666,7 +669,7 @@ fn reconcile(status: &mut WithdrawalStatus) -> Result<(), String> {
     if status.settlement_verified || status.tx.outbox_id.is_empty() {
         return Ok(());
     }
-    let inspection = sdk::tx_inspect(&status.signing_wallet, CHAIN, &status.tx.outbox_id)
+    let inspection = sdk::tx_inspect(&status.note_wallet, CHAIN, &status.tx.outbox_id)
         .map_err(|e| e.message())?;
     status.tx.tx_hash = inspection.tx_hash.clone();
     match inspection.state.as_str() {

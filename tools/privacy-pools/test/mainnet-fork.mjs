@@ -23,6 +23,8 @@ import {
 import { privateKeyToAccount } from "viem/accounts";
 import { mainnet } from "viem/chains";
 
+import { accountDigest } from "../cli.mjs";
+
 const ENTRYPOINT = "0x6818809eefce719e480a7526d76bd3e561526b46";
 const NATIVE_ASSET = "0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE";
 const RECIPIENT = "0x1111111111111111111111111111111111111111";
@@ -183,7 +185,7 @@ try {
 
   testHome = await mkdtemp(join(tmpdir(), "privacy-pools-fork-"));
   const hash = "f".repeat(64);
-  const dataRoot = join(testHome, "petals", "data", hash);
+  const dataRoot = join(testHome, "petals", "data-accounts", hash, accountDigest("dev", 0));
   const notePath = join(dataRoot, "secrets/privacy-pools/notes/dev/pp-deposit-1");
   const depositStatusPath = join(dataRoot, "state/privacy-pools/deposits/dev/pp-deposit-1");
   const relayStatusPath = join(dataRoot, "state/privacy-pools/private-relays/dev/pp-deposit-1");
@@ -228,7 +230,8 @@ fetch(new URL("/submit", url), {
   const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
   const args = [
     cli, "relay-private",
-    "--note-wallet", "dev",
+    "--wallet", "dev",
+    "--index", "0",
     "--id", "pp-deposit-1",
     "--relayer", relayerUrl,
     "--max-fee-bps", "0",

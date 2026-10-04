@@ -30,6 +30,7 @@ import {
   getCommitment,
 } from "@0xbow/privacy-pools-core-sdk";
 import { poseidon } from "maci-crypto/build/ts/hashing.js";
+import { blake3 } from "@noble/hashes/blake3";
 import {
   createPublicClient,
   decodeAbiParameters,
@@ -141,10 +142,33 @@ function bloomHome(options) {
   return resolve(options.home ?? process.env.BLOOM_HOME ?? `${homedir()}/.bloom`);
 }
 
-async function activeDataRoot(home) {
+// Must match Bloom's `account_digest` (bloom-petals private_store.rs).
+export function accountDigest(wallet, index) {
+  const name = Buffer.from(wallet, "utf8");
+  const length = Buffer.alloc(8);
+  length.writeBigUInt64BE(BigInt(name.length));
+  const number = Buffer.alloc(4);
+  number.writeUInt32BE(index);
+  const digest = blake3(Buffer.concat([Buffer.from("bloom-petal-store-account/v1\0"), length, name, number]));
+  return `v1-${Buffer.from(digest).toString("hex")}`;
+}
+
+// A Bloom account number: canonical decimal u32, as the host accepts it.
+export function accountIndex(value) {
+  assert(/^(0|[1-9][0-9]{0,9})$/.test(value ?? "") && Number(value) <= 0xffffffff, "invalid --index: must be a canonical account number");
+  return Number(value);
+}
+
+function packageHash(value, label) {
+  assert(/^[0-9a-f]{64}$/.test(value), `invalid ${label}`);
+  return value;
+}
+
+// Bloom keeps one private store per wallet/index account of the active package.
+export async function accountDataRoot(home, wallet, index) {
   const owner = JSON.parse(await readFile(`${home}/petals/store/owners/privacy-pools.json`, "utf8"));
-  assert(/^[0-9a-f]{64}$/.test(owner.hash), "invalid active privacy-pools package hash");
-  return `${home}/petals/data/${owner.hash}`;
+  const hash = packageHash(owner.hash, "active privacy-pools package hash");
+  return `${home}/petals/data-accounts/${hash}/${accountDigest(wallet, index)}`;
 }
 
 function safeSegment(value, label) {
@@ -602,7 +626,14 @@ async function backupCommand(options) {
   const id = safeSegment(required(options, "id"), "id");
   const output = resolve(required(options, "out"));
   const password = await passphrase(resolve(required(options, "passphrase-file")));
-  const root = await activeDataRoot(bloomHome(options));
+  const home = bloomHome(options);
+  // Releases before wallet/index routes kept notes in one package-level
+  // store, which Bloom does not carry into account stores. Back such a note
+  // up from that store, then restore it into an account.
+  assert((options.index === undefined) !== (options["legacy-package"] === undefined), "pass exactly one of --index or --legacy-package");
+  const root = options["legacy-package"] === undefined
+    ? await accountDataRoot(home, wallet, accountIndex(options.index))
+    : `${home}/petals/data/${packageHash(options["legacy-package"], "--legacy-package")}`;
   const notePath = `${root}/secrets/privacy-pools/notes/${wallet}/${id}`;
   const statePath = `${root}/state/privacy-pools/deposits/${wallet}/${id}`;
   const note = JSON.parse(await readFile(notePath, "utf8"));
@@ -650,7 +681,8 @@ export async function restoreCommand(options) {
         "refusing to restore without an explicit, matching operator assertion",
     );
   }
-  const root = await activeDataRoot(bloomHome(options));
+  const index = accountIndex(required(options, "index"));
+  const root = await accountDataRoot(bloomHome(options), safeSegment(envelope.wallet, "wallet"), index);
   if (envelope.kind === "deposit") {
     const wallet = safeSegment(envelope.wallet, "wallet");
     const id = safeSegment(envelope.id, "id");
@@ -681,7 +713,7 @@ export async function restoreCommand(options) {
   } else {
     fail("backup has unknown note kind");
   }
-  console.log(stringify({ restored: true, kind: envelope.kind, wallet: envelope.wallet, id: envelope.id }));
+  console.log(stringify({ restored: true, kind: envelope.kind, wallet: envelope.wallet, index, id: envelope.id }));
 }
 
 function fieldElement() {
@@ -789,9 +821,9 @@ async function verifyArtifactsCommand(options) {
   }));
 }
 
-function resolveSigningAddress(wallet, bloomBinary, home) {
-  const result = spawnSync(bloomBinary, ["--home", home, "wallet", "address", wallet], { encoding: "utf8" });
-  assert(result.status === 0, `could not resolve signing wallet: ${result.stderr.trim()}`);
+function resolveAccountAddress(wallet, index, bloomBinary, home) {
+  const result = spawnSync(bloomBinary, ["--home", home, "vfs", "cat", `/wallets/${wallet}/${index}/address.evm`], { encoding: "utf8" });
+  assert(result.status === 0, `could not resolve the account address: ${result.stderr.trim()}`);
   const address = result.stdout.trim();
   assert(/^0x[0-9a-fA-F]{40}$/.test(address), "Bloom returned an invalid wallet address");
   return address;
@@ -799,9 +831,9 @@ function resolveSigningAddress(wallet, bloomBinary, home) {
 
 async function prepareCommand(options) {
   progress("starting");
-  const noteWallet = safeSegment(required(options, "note-wallet"), "note wallet");
+  const noteWallet = safeSegment(required(options, "wallet"), "wallet");
+  const index = accountIndex(required(options, "index"));
   const id = safeSegment(required(options, "id"), "id");
-  const signingWallet = safeSegment(required(options, "signing-wallet"), "signing wallet");
   const replacementId = safeSegment(required(options, "replacement-id"), "replacement id");
   assert(id !== replacementId, "replacement id must differ from the existing note id");
   const output = resolve(required(options, "out"));
@@ -809,7 +841,7 @@ async function prepareCommand(options) {
   const password = await passphrase(resolve(required(options, "passphrase-file")));
   const artifacts = resolve(required(options, "artifacts"));
   const home = bloomHome(options);
-  const root = await activeDataRoot(home);
+  const root = await accountDataRoot(home, noteWallet, index);
   const note = JSON.parse(await readFile(`${root}/secrets/privacy-pools/notes/${noteWallet}/${id}`, "utf8"));
   const state = JSON.parse(await readFile(`${root}/state/privacy-pools/deposits/${noteWallet}/${id}`, "utf8"));
   Object.assign(note, state);
@@ -820,8 +852,9 @@ async function prepareCommand(options) {
   progress("note-validated");
 
   const processooor = options.processooor
-    ?? resolveSigningAddress(
-      signingWallet,
+    ?? resolveAccountAddress(
+      noteWallet,
+      index,
       options["bloom-bin"] ?? process.env.BLOOM_BIN ?? "bloom",
       home,
     );
@@ -930,7 +963,7 @@ async function prepareCommand(options) {
     Buffer.from(`${JSON.stringify(replacement)}\n`),
     { exclusive: true },
   );
-  const stageRequest = { signing_wallet: signingWallet, replacement_id: replacementId, calldata };
+  const stageRequest = { replacement_id: replacementId, calldata };
   await atomicWrite(output, Buffer.from(`${stringify(stageRequest)}\n`), { exclusive: true });
   progress("complete");
   console.log(stringify({
@@ -1120,7 +1153,8 @@ async function finalizePrivateRelay({ client, journal, journalPath, note, notePa
 
 async function relayPrivateCommand(options) {
   privateProgress("starting");
-  const noteWallet = safeSegment(required(options, "note-wallet"), "note wallet");
+  const noteWallet = safeSegment(required(options, "wallet"), "wallet");
+  const index = accountIndex(required(options, "index"));
   const id = safeSegment(required(options, "id"), "id");
   const relayer = new URL(required(options, "relayer"));
   assert(!relayer.username && !relayer.password, "relayer URL must not contain credentials");
@@ -1135,7 +1169,7 @@ async function relayPrivateCommand(options) {
   const replacementBackup = resolve(required(options, "replacement-backup"));
   const password = await passphrase(resolve(required(options, "passphrase-file")));
   const artifacts = resolve(required(options, "artifacts"));
-  const root = await activeDataRoot(bloomHome(options));
+  const root = await accountDataRoot(bloomHome(options), noteWallet, index);
   const notePath = `${root}/secrets/privacy-pools/notes/${noteWallet}/${id}`;
   const statusPath = `${root}/state/privacy-pools/private-relays/${noteWallet}/${id}`;
   const note = JSON.parse(await readFile(notePath, "utf8"));
@@ -1431,14 +1465,15 @@ async function relayPrivateCommand(options) {
 
 function usage() {
   return `Usage:
-  bloom-privacy-pools backup --wallet W --id ID --out FILE --passphrase-file FILE [--home DIR]
-  bloom-privacy-pools restore --in FILE --passphrase-file FILE [--home DIR]
+  bloom-privacy-pools backup --wallet W --index N --id ID --out FILE --passphrase-file FILE [--home DIR]
+    (a note left in a pre-account release's store: --legacy-package HASH instead of --index)
+  bloom-privacy-pools restore --in FILE --index N --passphrase-file FILE [--home DIR]
     (a v1/legacy-schema backup additionally requires --trust-legacy-wallet W --trust-legacy-id ID
      --trust-legacy-kind deposit|replacement, asserting out of band what its unauthenticated
      metadata is trusted to claim)
   bloom-privacy-pools verify-artifacts --artifacts DIR
-  bloom-privacy-pools prepare --note-wallet W --id ID --signing-wallet W --replacement-id ID --artifacts DIR --replacement-backup FILE --passphrase-file FILE --out FILE [--amount WEI] [--rpc URL] [--home DIR]
-  bloom-privacy-pools relay-private --note-wallet W --id ID --relayer URL --max-fee-bps BPS --artifacts DIR --replacement-backup FILE --passphrase-file FILE [--retry-ambiguous yes] [--rpc URL] [--home DIR]`;
+  bloom-privacy-pools prepare --wallet W --index N --id ID --replacement-id ID --artifacts DIR --replacement-backup FILE --passphrase-file FILE --out FILE [--amount WEI] [--rpc URL] [--home DIR]
+  bloom-privacy-pools relay-private --wallet W --index N --id ID --relayer URL --max-fee-bps BPS --artifacts DIR --replacement-backup FILE --passphrase-file FILE [--retry-ambiguous yes] [--rpc URL] [--home DIR]`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {

@@ -9,7 +9,7 @@
 
 use serde::{Deserialize, Serialize};
 
-/// Write body for `POST /petals/privacy-pools/deposits/<wallet>/<id>.json`.
+/// Write body for `POST /petals/privacy-pools/deposits/<wallet>/<index>/<id>.json`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct DepositRequest {
@@ -110,7 +110,7 @@ impl From<&StoredNote> for DepositStatus {
     }
 }
 
-/// Public note view served at `/petals/privacy-pools/notes/<wallet>/<id>.json`.
+/// Public note view served at `/petals/privacy-pools/notes/<wallet>/<index>/<id>.json`.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct NoteView {
     pub asset: String,
@@ -162,7 +162,6 @@ pub struct ReplacementNote {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct WithdrawalRequest {
-    pub signing_wallet: String,
     pub replacement_id: String,
     pub calldata: String,
 }
@@ -196,7 +195,6 @@ pub struct PrivateRelayStatus {
 pub struct WithdrawalStatus {
     pub note_wallet: String,
     pub note_id: String,
-    pub signing_wallet: String,
     pub processooor: String,
     pub withdrawal_value_wei: String,
     pub existing_nullifier_hash: String,

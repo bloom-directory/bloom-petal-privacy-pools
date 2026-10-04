@@ -35,9 +35,9 @@ as chat or shell-argument input.
 | `/petals/privacy-pools/protocol.json` | Mainnet constants, addresses, hashing scheme | — |
 | `/petals/privacy-pools/pool/config.json` | Live pool config (min deposit, fees) | — |
 | `/petals/privacy-pools/pool/state.json` | Live pool state (tree size, ASP root, scope) | — |
-| `/petals/privacy-pools/deposits/<wallet>/<id>.json` | Read status (reconciles on-chain) | Stage ETH deposit |
-| `/petals/privacy-pools/notes/<wallet>/<id>.json` | Public note view (no secrets) | — |
-| `/petals/privacy-pools/withdrawals/<wallet>/<id>.json` | Readiness, direct settlement, or redacted private-relay status | Stage a direct withdrawal, or record public private-relay intent |
+| `/petals/privacy-pools/deposits/<wallet>/<index>/<id>.json` | Read status (reconciles on-chain) | Stage ETH deposit |
+| `/petals/privacy-pools/notes/<wallet>/<index>/<id>.json` | Public note view (no secrets) | — |
+| `/petals/privacy-pools/withdrawals/<wallet>/<index>/<id>.json` | Readiness, direct settlement, or redacted private-relay status | Stage a direct withdrawal, or record public private-relay intent |
 
 ## State machine
 
@@ -95,10 +95,10 @@ before attempting proof preparation.
 
 ## Canonical operation
 
-`/petals/privacy-pools/deposits/<wallet>/<id>.json`
+`/petals/privacy-pools/deposits/<wallet>/<index>/<id>.json`
 
-`<wallet>` is a Bloom wallet alias (resolved by the tx outbox). `<id>` is a
-caller-defined durable idempotency key. Write body:
+`<wallet>/<index>` selects a Bloom wallet account; that account signs and holds
+the note. `<id>` is a caller-defined durable idempotency key within the account. Write body:
 
 ```json
 { "amount_wei": "1000000000000000000", "asset": "eth" }
@@ -146,7 +146,7 @@ simulation. It outputs public calldata only.
 
 The writable withdrawal route supports the direct call shape with empty data.
 It independently decodes and validates the public signals against private
-state, verifies the signing wallet/processooor, rechecks the latest ASP root,
+state, verifies that the processooor is the selected account, rechecks the latest ASP root,
 recomputes the replacement commitment, simulates, and stages through
 `bloom:tx.outbox`. Reads reconcile the `Withdrawn` event and promote a non-zero
 replacement note.
@@ -167,14 +167,14 @@ payload, calldata, transaction hash, or exact submission time. There is no
 
 ## Directory listings
 
-The `deposits/`, `notes/`, and `withdrawals/` directory listings enumerate
-wallets and ids through `store_list` in the public state namespace. Never list
-or infer ids from the secret namespace.
+Bloom lists the wallets and accounts under `deposits/`, `notes/`, and
+`withdrawals/`. Each account's directory lists its ids through `store_list` in
+the public state namespace. Never list or infer ids from the secret namespace.
 
 ## Capabilities
 
 Declared in `petal.toml`: `bloom:store`, `bloom:tx.outbox`, `bloom:chain`, and
-`bloom:vfs.read` for resolving a direct signing wallet. No `bloom:http`,
+`bloom:vfs.read` for resolving the selected account's address. No `bloom:http`,
 private-input, or `bloom:sign` capability is required; the tx outbox owns
 direct owner approval, while the local companion owns private relay input.
 That input form is hidden from an agent driving VFS, not from a process with

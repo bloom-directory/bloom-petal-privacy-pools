@@ -9,7 +9,11 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { encodeAbiParameters } from "viem";
 
+import { poseidon } from "maci-crypto/build/ts/hashing.js";
 import {
+  accountDataRoot,
+  accountDigest,
+  accountIndex,
   completePrivateRelayStatus,
   collectPrivateRecipient,
   decryptEnvelope,
@@ -337,12 +341,13 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
   }));
 
   await assert.rejects(
-    restoreCommand({ in: envelopeIn, "passphrase-file": passphraseFile, home }),
+    restoreCommand({ in: envelopeIn, index: "1", "passphrase-file": passphraseFile, home }),
     /trust-legacy-wallet/,
   );
   await assert.rejects(
     restoreCommand({
       in: envelopeIn,
+      index: "1",
       "passphrase-file": passphraseFile,
       home,
       "trust-legacy-wallet": "mallory",
@@ -354,6 +359,7 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
   await assert.rejects(
     restoreCommand({
       in: envelopeIn,
+      index: "1",
       "passphrase-file": passphraseFile,
       home,
       "trust-legacy-wallet": "dev",
@@ -366,6 +372,7 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
   );
   await restoreCommand({
     in: envelopeIn,
+    index: "1",
     "passphrase-file": passphraseFile,
     home,
     "trust-legacy-wallet": "dev",
@@ -373,7 +380,7 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
     "trust-legacy-kind": "replacement",
   });
   const restored = JSON.parse(
-    await readFile(`${home}/petals/data/${hash}/secrets/privacy-pools/replacements/dev/note-2`, "utf8"),
+    await readFile(`${await accountDataRoot(home, "dev", 1)}/secrets/privacy-pools/replacements/dev/note-2`, "utf8"),
   );
   assert.equal(restored.nullifier, "0x1");
 });
@@ -550,8 +557,8 @@ test("completed private relay status removes ceremony correlation", () => {
 test("completed private relay resume removes a legacy plaintext recipient before returning", async () => {
   const home = await mkdtemp(join(tmpdir(), "privacy-pools-complete-resume-"));
   const hash = "a".repeat(64);
-  const root = `${home}/petals/data/${hash}`;
   const noteWallet = "dev";
+  const root = `${home}/petals/data-accounts/${hash}/${accountDigest(noteWallet, 1)}`;
   const id = "note-1";
   const replacementId = "note-2";
   const passphraseFile = join(home, "passphrase.txt");
@@ -584,7 +591,8 @@ test("completed private relay resume removes a legacy plaintext recipient before
   const result = spawnSync(process.execPath, [
     fileURLToPath(new URL("../cli.mjs", import.meta.url)),
     "relay-private",
-    "--note-wallet", noteWallet,
+    "--wallet", noteWallet,
+    "--index", "1",
     "--id", id,
     "--relayer", "https://relay.example",
     "--max-fee-bps", "250",
@@ -596,4 +604,66 @@ test("completed private relay resume removes a legacy plaintext recipient before
 
   assert.equal(result.status, 0, result.stderr);
   await assert.rejects(readFile(legacyRecipientPath, "utf8"), (error) => error?.code === "ENOENT");
+});
+
+test("account store digests match Bloom's account_digest", () => {
+  // Vectors from bloom-petals `private_store::account_digest`.
+  assert.equal(accountDigest("alice", 0), "v1-db0a79cc5ea4bf55c9d92ca74afb14cedc95b0ee6ec686b7b33be37a3c6d269d");
+  assert.equal(accountDigest("alice", 1), "v1-ea073040017102fa691d9a2b979f8e3c07a791404a1b5d46649d201b7b866632");
+  assert.equal(accountDigest("everyday", 4294967295), "v1-5d32259f0e1dafcdfe2311e448d0ff7195a53760c08bfb2152fa27b3296a9f3b");
+});
+
+test("account index accepts only canonical u32 decimals", () => {
+  assert.equal(accountIndex("0"), 0);
+  assert.equal(accountIndex("4294967295"), 4294967295);
+  for (const bad of [undefined, "", "00", "01", "-1", "1.0", "4294967296", "0/../1"]) {
+    assert.throws(() => accountIndex(bad), /invalid --index/, String(bad));
+  }
+});
+
+test("a note in a pre-account package store is recovered into an account store", async () => {
+  const home = await mkdtemp(join(tmpdir(), "privacy-pools-legacy-"));
+  const legacyHash = "b".repeat(64);
+  const activeHash = "c".repeat(64);
+  const passphraseFile = join(home, "passphrase.txt");
+  const backup = join(home, "note.enc.json");
+  const nullifier = 11n;
+  const secret = 13n;
+  const note = {
+    wallet: "dev",
+    asset: "eth",
+    amount_wei: "1000",
+    nullifier: `0x${nullifier.toString(16)}`,
+    secret: `0x${secret.toString(16)}`,
+    precommitment: `0x${BigInt(poseidon([nullifier, secret])).toString(16)}`,
+    status: "confirmed",
+    backup_verified: false,
+  };
+  const legacyRoot = `${home}/petals/data/${legacyHash}`;
+  await mkdir(`${legacyRoot}/secrets/privacy-pools/notes/dev`, { recursive: true });
+  await mkdir(`${legacyRoot}/state/privacy-pools/deposits/dev`, { recursive: true });
+  await writeFile(`${legacyRoot}/secrets/privacy-pools/notes/dev/note-1`, JSON.stringify(note));
+  await mkdir(`${home}/petals/store/owners`, { recursive: true });
+  await writeFile(`${home}/petals/store/owners/privacy-pools.json`, JSON.stringify({ hash: activeHash }));
+  await writeFile(passphraseFile, "a sufficiently long passphrase\n", { mode: 0o600 });
+  const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
+  const run = (...args) => spawnSync(process.execPath, [cli, ...args, "--passphrase-file", passphraseFile, "--home", home], { encoding: "utf8" });
+
+  const ambiguous = run("backup", "--wallet", "dev", "--id", "note-1", "--out", backup, "--index", "1", "--legacy-package", legacyHash);
+  assert.notEqual(ambiguous.status, 0);
+  assert.match(ambiguous.stderr, /exactly one of --index or --legacy-package/);
+
+  const saved = run("backup", "--wallet", "dev", "--id", "note-1", "--out", backup, "--legacy-package", legacyHash);
+  assert.equal(saved.status, 0, saved.stderr);
+  const restored = run("restore", "--in", backup, "--index", "1");
+  assert.equal(restored.status, 0, restored.stderr);
+
+  const accountRoot = await accountDataRoot(home, "dev", 1);
+  assert.equal(accountRoot, `${home}/petals/data-accounts/${activeHash}/${accountDigest("dev", 1)}`);
+  const recovered = JSON.parse(await readFile(`${accountRoot}/secrets/privacy-pools/notes/dev/note-1`, "utf8"));
+  assert.equal(recovered.nullifier, note.nullifier);
+  assert.equal(recovered.backup_verified, true);
+  const status = JSON.parse(await readFile(`${accountRoot}/state/privacy-pools/deposits/dev/note-1`, "utf8"));
+  assert.equal(status.nullifier, undefined);
+  assert.equal(status.secret, undefined);
 });
