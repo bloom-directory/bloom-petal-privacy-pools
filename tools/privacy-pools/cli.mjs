@@ -327,12 +327,16 @@ export async function collectPrivateRecipient({ amountWei, source, relayer, maxF
     let settled = false;
     let accepted = false;
     let timer;
+    // Settle without waiting for open connections: a client that stalls
+    // mid-request must not hold the helper past the form's deadline.
     const finish = (error, recipient) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      server.close(() => error ? rejectPromise(error) : resolvePromise(recipient));
-      server.closeIdleConnections();
+      server.close();
+      server.closeAllConnections();
+      if (error) rejectPromise(error);
+      else resolvePromise(recipient);
     };
     const server = createServer(async (request, response) => {
       try {
