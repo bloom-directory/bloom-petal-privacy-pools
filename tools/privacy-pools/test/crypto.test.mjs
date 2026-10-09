@@ -2,13 +2,20 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createCipheriv, createHash, randomBytes, scryptSync } from "node:crypto";
 import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { encodeAbiParameters } from "viem";
 
+import { poseidon } from "maci-crypto/build/ts/hashing.js";
 import {
+  accountDataRoot,
+  accountDigest,
+  accountIndex,
+  completePrivateRelayStatus,
+  collectPrivateRecipient,
   decryptEnvelope,
   encryptEnvelope,
   atomicWrite,
@@ -19,6 +26,223 @@ import {
   verifySettlementReceipt,
   writeIdenticalOrCreate,
 } from "../cli.mjs";
+
+test("private relay destination is collected by a one-shot loopback form", async () => {
+  const privateRecipient = "0x1111111111111111111111111111111111111111";
+  let formUrl;
+  const collected = collectPrivateRecipient({
+    amountWei: "250000000000000000",
+    source: "dev/note-1",
+    relayer: "https://relay.example",
+    maxFeeBps: "250",
+    timeoutMs: 2_000,
+    openBrowser: async (url) => {
+      formUrl = url;
+      assert.equal(new URL(url).hostname, "127.0.0.1");
+      assert(!url.includes(privateRecipient));
+      const page = await fetch(url);
+      assert.equal(page.status, 200);
+      assert.equal(page.headers.get("cache-control"), "no-store");
+      assert.match(page.headers.get("content-security-policy"), /default-src 'none'/);
+      const pageBody = await page.text();
+      assert.match(pageBody, /<strong>\/bloom<\/strong> walletFS/);
+      assert.match(pageBody, /href="\/private-input\.css"/);
+      assert.match(pageBody, /src="\/bloom-primary\.svg"/);
+      assert.match(pageBody, /sends it to the selected relayer/);
+      assert.match(pageBody, /records it publicly on Ethereum/);
+      assert.doesNotMatch(pageBody, /goes only to the local Privacy Pools companion/);
+      assert(!pageBody.includes(privateRecipient));
+      const token = new URL(url).pathname.split("/").pop();
+      const origin = new URL(url).origin;
+      const stylesheet = await fetch(`${origin}/private-input.css`);
+      assert.equal(stylesheet.headers.get("content-type"), "text/css; charset=utf-8");
+      assert.match(await stylesheet.text(), /--paper:#f4efe6/);
+      const logo = await fetch(`${origin}/bloom-primary.svg`);
+      assert.equal(logo.headers.get("content-type"), "image/svg+xml");
+      assert.equal((await logo.text()).match(/<path /g)?.length, 7);
+      assert.equal((await fetch(`${origin}/context`)).status, 404);
+      const context = await fetch(`${origin}/context`, {
+        headers: { "X-Private-Input-Token": token },
+      });
+      assert.deepEqual(await context.json(), {
+        network: "Ethereum mainnet",
+        asset: "ETH",
+        amountEth: "0.25 ETH",
+        amountWei: "250000000000000000",
+        source: "dev/note-1",
+        relayer: "https://relay.example",
+        maxFee: "250 bps (2.5%)",
+      });
+      const rejected = await fetch(`${origin}/submit`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Origin": origin,
+          "X-Private-Input-Token": token,
+        },
+        body: JSON.stringify({ recipient: "not-an-address" }),
+      });
+      assert.equal(rejected.status, 400);
+      const accepted = await fetch(`${origin}/submit`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Origin": origin,
+          "X-Private-Input-Token": token,
+        },
+        body: JSON.stringify({ recipient: privateRecipient }),
+      });
+      assert.equal(accepted.status, 204);
+    },
+  });
+  assert.equal(await collected, "0x1111111111111111111111111111111111111111");
+  await assert.rejects(fetch(formUrl));
+});
+
+// The form's only defences against another local process are the token, the
+// `Origin` check that stops a browser page on another origin from posting, and
+// the `Host` check that stops a DNS-rebinding name from resolving here. Each
+// is asserted directly, because a passing happy path proves none of them.
+
+function rawGet(origin, path, host) {
+  const url = new URL(path, origin);
+  return new Promise((resolvePromise, rejectPromise) => {
+    const call = httpRequest(
+      { host: url.hostname, port: url.port, path: url.pathname, method: "GET", headers: { Host: host } },
+      (response) => {
+        response.resume();
+        response.once("end", () => resolvePromise(response.statusCode));
+      },
+    );
+    call.once("error", rejectPromise);
+    call.end();
+  });
+}
+
+test("private relay destination form refuses a cross-origin submission", async () => {
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs: 2_000,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        for (const origin of ["https://evil.example", "http://127.0.0.1:1", undefined]) {
+          const response = await fetch(new URL("/submit", url), {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "X-Private-Input-Token": token,
+              ...(origin ? { Origin: origin } : {}),
+            },
+            body: JSON.stringify({ recipient: "0x2222222222222222222222222222222222222222" }),
+          });
+          assert.equal(response.status, 400, `origin ${origin} must be refused`);
+        }
+        const cancelled = await fetch(new URL("/cancel", url), {
+          method: "POST",
+          headers: { Origin: parsed.origin, "X-Private-Input-Token": token },
+        });
+        assert.equal(cancelled.status, 204);
+      },
+    }),
+    /cancelled/,
+  );
+});
+
+test("private relay destination form refuses a foreign Host header", async () => {
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs: 2_000,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        // A rebound name reaches this port with its own Host, so the page must
+        // not be served to it even though the path carries the right token.
+        assert.equal(await rawGet(parsed.origin, parsed.pathname, `rebound.example:${parsed.port}`), 400);
+        assert.equal(await rawGet(parsed.origin, parsed.pathname, `localhost:${parsed.port}`), 400);
+        assert.equal(await rawGet(parsed.origin, parsed.pathname, `127.0.0.1:${parsed.port}`), 200);
+        const cancelled = await fetch(new URL("/cancel", url), {
+          method: "POST",
+          headers: { Origin: parsed.origin, "X-Private-Input-Token": token },
+        });
+        assert.equal(cancelled.status, 204);
+      },
+    }),
+    /cancelled/,
+  );
+});
+
+test("private relay destination form can be cancelled without waiting for expiry", async () => {
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs: 2_000,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        const response = await fetch(new URL("/cancel", url), {
+          method: "POST",
+          headers: {
+            "Origin": parsed.origin,
+            "X-Private-Input-Token": token,
+          },
+        });
+        assert.equal(response.status, 204);
+      },
+    }),
+    /cancelled/,
+  );
+});
+
+test("private relay destination form expires on time while a submission body is held open", { timeout: 5_000 }, async () => {
+  const timeoutMs = 300;
+  let stalled;
+  const started = Date.now();
+  await assert.rejects(
+    collectPrivateRecipient({
+      amountWei: "1",
+      source: "dev/note-1",
+      relayer: "https://relay.example",
+      maxFeeBps: "0",
+      timeoutMs,
+      openBrowser: async (url) => {
+        const parsed = new URL(url);
+        const token = parsed.pathname.split("/").pop();
+        // Send headers and part of the body, then never finish it.
+        stalled = httpRequest({
+          host: parsed.hostname,
+          port: parsed.port,
+          path: "/submit",
+          method: "POST",
+          headers: {
+            "Origin": parsed.origin,
+            "Content-Type": "application/json",
+            "Content-Length": "200",
+            "X-Private-Input-Token": token,
+          },
+        });
+        stalled.on("error", () => {});
+        stalled.write('{"recipient":"0x');
+        stalled.flushHeaders();
+      },
+    }),
+    /expired/,
+  );
+  const elapsed = Date.now() - started;
+  stalled.destroy();
+  assert(elapsed < timeoutMs + 1_000, `settled after ${elapsed} ms`);
+});
 
 test("encrypted note backup round trips", () => {
   const plaintext = Buffer.from('{"nullifier":"secret material"}\n');
@@ -117,12 +341,13 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
   }));
 
   await assert.rejects(
-    restoreCommand({ in: envelopeIn, "passphrase-file": passphraseFile, home }),
+    restoreCommand({ in: envelopeIn, index: "1", "passphrase-file": passphraseFile, home }),
     /trust-legacy-wallet/,
   );
   await assert.rejects(
     restoreCommand({
       in: envelopeIn,
+      index: "1",
       "passphrase-file": passphraseFile,
       home,
       "trust-legacy-wallet": "mallory",
@@ -134,6 +359,7 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
   await assert.rejects(
     restoreCommand({
       in: envelopeIn,
+      index: "1",
       "passphrase-file": passphraseFile,
       home,
       "trust-legacy-wallet": "dev",
@@ -146,6 +372,7 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
   );
   await restoreCommand({
     in: envelopeIn,
+    index: "1",
     "passphrase-file": passphraseFile,
     home,
     "trust-legacy-wallet": "dev",
@@ -153,7 +380,7 @@ test("v1 (legacy) backup restore requires an explicit, matching operator asserti
     "trust-legacy-kind": "replacement",
   });
   const restored = JSON.parse(
-    await readFile(`${home}/petals/data/${hash}/secrets/privacy-pools/replacements/dev/note-2`, "utf8"),
+    await readFile(`${await accountDataRoot(home, "dev", 1)}/secrets/privacy-pools/replacements/dev/note-2`, "utf8"),
   );
   assert.equal(restored.nullifier, "0x1");
 });
@@ -311,4 +538,132 @@ test("private replacement public state removes secrets and transaction correlati
     commitment: "0x1234",
     tx: { chain: "mainnet", outbox_id: "private-relay" },
   });
+});
+
+test("completed private relay status removes ceremony correlation", () => {
+  const publicStatus = completePrivateRelayStatus({
+    status: "pending",
+    approval_wallet: "legacy-wallet",
+    ceremony_url: "http://localhost/legacy-secret",
+    ceremony_operation_id: "operation-1",
+    ceremony_expires_ms: 123,
+  }, 1n);
+  assert.deepEqual(publicStatus, {
+    status: "complete",
+    next: "Settlement finalized. The backed-up replacement note is active.",
+  });
+});
+
+test("completed private relay resume removes a legacy plaintext recipient before returning", async () => {
+  const home = await mkdtemp(join(tmpdir(), "privacy-pools-complete-resume-"));
+  const hash = "a".repeat(64);
+  const noteWallet = "dev";
+  const root = `${home}/petals/data-accounts/${hash}/${accountDigest(noteWallet, 1)}`;
+  const id = "note-1";
+  const replacementId = "note-2";
+  const passphraseFile = join(home, "passphrase.txt");
+  const legacyRecipientPath = `${root}/secrets/privacy-pools/private-inputs/${noteWallet}/${id}`;
+
+  await mkdir(`${home}/petals/store/owners`, { recursive: true });
+  await mkdir(`${root}/secrets/privacy-pools/notes/${noteWallet}`, { recursive: true });
+  await mkdir(`${root}/state/privacy-pools/private-relays/${noteWallet}`, { recursive: true });
+  await mkdir(`${root}/secrets/privacy-pools/private-relay-attempts/${noteWallet}`, { recursive: true });
+  await mkdir(`${root}/secrets/privacy-pools/private-inputs/${noteWallet}`, { recursive: true });
+  await writeFile(`${home}/petals/store/owners/privacy-pools.json`, JSON.stringify({ hash }));
+  await writeFile(`${root}/secrets/privacy-pools/notes/${noteWallet}/${id}`, JSON.stringify({
+    backup_verified: true,
+    value: "1000",
+    label: "1",
+    commitment: "0x1",
+  }));
+  await writeFile(`${root}/state/privacy-pools/private-relays/${noteWallet}/${id}`, JSON.stringify({
+    note_wallet: noteWallet,
+    note_id: id,
+    replacement_id: replacementId,
+  }));
+  await writeFile(`${root}/secrets/privacy-pools/private-relay-attempts/${noteWallet}/${id}`, JSON.stringify({
+    phase: "complete",
+    remaining_value_wei: "0",
+  }));
+  await writeFile(legacyRecipientPath, `${recipient}\n`, { mode: 0o600 });
+  await writeFile(passphraseFile, "a sufficiently long passphrase\n", { mode: 0o600 });
+
+  const result = spawnSync(process.execPath, [
+    fileURLToPath(new URL("../cli.mjs", import.meta.url)),
+    "relay-private",
+    "--wallet", noteWallet,
+    "--index", "1",
+    "--id", id,
+    "--relayer", "https://relay.example",
+    "--max-fee-bps", "250",
+    "--artifacts", join(home, "artifacts"),
+    "--replacement-backup", join(home, "replacement.enc.json"),
+    "--passphrase-file", passphraseFile,
+    "--home", home,
+  ], { encoding: "utf8" });
+
+  assert.equal(result.status, 0, result.stderr);
+  await assert.rejects(readFile(legacyRecipientPath, "utf8"), (error) => error?.code === "ENOENT");
+});
+
+test("account store digests match Bloom's account_digest", () => {
+  // Vectors from bloom-petals `private_store::account_digest`.
+  assert.equal(accountDigest("alice", 0), "v1-db0a79cc5ea4bf55c9d92ca74afb14cedc95b0ee6ec686b7b33be37a3c6d269d");
+  assert.equal(accountDigest("alice", 1), "v1-ea073040017102fa691d9a2b979f8e3c07a791404a1b5d46649d201b7b866632");
+  assert.equal(accountDigest("everyday", 4294967295), "v1-5d32259f0e1dafcdfe2311e448d0ff7195a53760c08bfb2152fa27b3296a9f3b");
+});
+
+test("account index accepts only canonical u32 decimals", () => {
+  assert.equal(accountIndex("0"), 0);
+  assert.equal(accountIndex("4294967295"), 4294967295);
+  for (const bad of [undefined, "", "00", "01", "-1", "1.0", "4294967296", "0/../1"]) {
+    assert.throws(() => accountIndex(bad), /invalid --index/, String(bad));
+  }
+});
+
+test("a note in a pre-account package store is recovered into an account store", async () => {
+  const home = await mkdtemp(join(tmpdir(), "privacy-pools-legacy-"));
+  const legacyHash = "b".repeat(64);
+  const activeHash = "c".repeat(64);
+  const passphraseFile = join(home, "passphrase.txt");
+  const backup = join(home, "note.enc.json");
+  const nullifier = 11n;
+  const secret = 13n;
+  const note = {
+    wallet: "dev",
+    asset: "eth",
+    amount_wei: "1000",
+    nullifier: `0x${nullifier.toString(16)}`,
+    secret: `0x${secret.toString(16)}`,
+    precommitment: `0x${BigInt(poseidon([nullifier, secret])).toString(16)}`,
+    status: "confirmed",
+    backup_verified: false,
+  };
+  const legacyRoot = `${home}/petals/data/${legacyHash}`;
+  await mkdir(`${legacyRoot}/secrets/privacy-pools/notes/dev`, { recursive: true });
+  await mkdir(`${legacyRoot}/state/privacy-pools/deposits/dev`, { recursive: true });
+  await writeFile(`${legacyRoot}/secrets/privacy-pools/notes/dev/note-1`, JSON.stringify(note));
+  await mkdir(`${home}/petals/store/owners`, { recursive: true });
+  await writeFile(`${home}/petals/store/owners/privacy-pools.json`, JSON.stringify({ hash: activeHash }));
+  await writeFile(passphraseFile, "a sufficiently long passphrase\n", { mode: 0o600 });
+  const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
+  const run = (...args) => spawnSync(process.execPath, [cli, ...args, "--passphrase-file", passphraseFile, "--home", home], { encoding: "utf8" });
+
+  const ambiguous = run("backup", "--wallet", "dev", "--id", "note-1", "--out", backup, "--index", "1", "--legacy-package", legacyHash);
+  assert.notEqual(ambiguous.status, 0);
+  assert.match(ambiguous.stderr, /exactly one of --index or --legacy-package/);
+
+  const saved = run("backup", "--wallet", "dev", "--id", "note-1", "--out", backup, "--legacy-package", legacyHash);
+  assert.equal(saved.status, 0, saved.stderr);
+  const restored = run("restore", "--in", backup, "--index", "1");
+  assert.equal(restored.status, 0, restored.stderr);
+
+  const accountRoot = await accountDataRoot(home, "dev", 1);
+  assert.equal(accountRoot, `${home}/petals/data-accounts/${activeHash}/${accountDigest("dev", 1)}`);
+  const recovered = JSON.parse(await readFile(`${accountRoot}/secrets/privacy-pools/notes/dev/note-1`, "utf8"));
+  assert.equal(recovered.nullifier, note.nullifier);
+  assert.equal(recovered.backup_verified, true);
+  const status = JSON.parse(await readFile(`${accountRoot}/state/privacy-pools/deposits/dev/note-1`, "utf8"));
+  assert.equal(status.nullifier, undefined);
+  assert.equal(status.secret, undefined);
 });

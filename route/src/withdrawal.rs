@@ -6,10 +6,7 @@
 //! simulates, stages through Bloom's outbox, and reconciles settlement.
 
 use alloy_primitives::{Address, U256};
-use petal::{
-    DispatchResponse, EvmTransaction, HostStatus, PrivateInputKind, PrivateInputOutcome,
-    PrivateInputRequest, sdk,
-};
+use petal::{DispatchResponse, EvmTransaction, HostStatus, sdk};
 use serde_json::Value;
 use sha3::{Digest, Keccak256};
 
@@ -18,8 +15,8 @@ use crate::field::FIELD_P;
 use crate::notes;
 use crate::protocol::{CHAIN, POOL_ETH};
 use crate::types::{
-    DepositStatus, PrivateRelayRecipient, PrivateRelayRequest, PrivateRelayStatus, ReplacementNote,
-    StoredNote, TxRef, WithdrawalRequest, WithdrawalStatus,
+    DepositStatus, PrivateRelayRequest, PrivateRelayStatus, ReplacementNote, StoredNote, TxRef,
+    WithdrawalRequest, WithdrawalStatus,
 };
 
 const MAX_REQUEST_BYTES: usize = 32 * 1024;
@@ -125,9 +122,11 @@ pub fn context_hash(processooor: Address, data: &[u8], scope: U256) -> U256 {
     U256::from_be_bytes(bytes) % FIELD_P
 }
 
-fn wallet_address(wallet: &str) -> Result<Address, String> {
-    let bytes =
-        sdk::vfs_read(&format!("wallets/{wallet}/address"), 128).map_err(|e| e.message())?;
+/// The selected account's EVM address. Bloom signs a staged transaction with
+/// the route's account and refuses VFS reads of any other account.
+fn account_address(wallet: &str, index: u32) -> Result<Address, String> {
+    let bytes = sdk::vfs_read(&format!("wallets/{wallet}/{index}/address.evm"), 128)
+        .map_err(|e| e.message())?;
     let value = std::str::from_utf8(&bytes)
         .map_err(|_| "wallet address is not UTF-8")?
         .trim();
@@ -142,7 +141,7 @@ fn preview_next(unspent: bool, backup_verified: bool) -> &'static str {
     } else if !backup_verified {
         "Create and verify an encrypted note backup with tools/privacy-pools backup before proving."
     } else {
-        "Run tools/privacy-pools prepare, then write its public stage request back to this path. Context remains null until the real signing wallet/processooor is selected."
+        "Run tools/privacy-pools prepare for this wallet and account, then write its public stage request back to this path. The account's own address is the processooor."
     }
 }
 
@@ -304,10 +303,14 @@ pub fn read(wallet: &str, id: &str) -> DispatchResponse {
     }
 }
 
-pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
+pub fn stage(wallet: &str, index: &str, id: &str, body: &[u8]) -> DispatchResponse {
     if let Err(e) = notes::validate_idents(wallet, id) {
         return err(-3, e);
     }
+    let index = match notes::account_index(index) {
+        Ok(index) => index,
+        Err(e) => return err(-3, e),
+    };
     if body.len() > MAX_REQUEST_BYTES {
         return err(-3, "withdrawal request body is too large");
     }
@@ -326,7 +329,7 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         Ok(request) => request,
         Err(e) => return err(-3, format!("invalid withdrawal request JSON: {e}")),
     };
-    if let Err(e) = notes::validate_idents(&request.signing_wallet, &request.replacement_id) {
+    if let Err(e) = notes::validate_idents(wallet, &request.replacement_id) {
         return err(-3, e);
     }
 
@@ -375,14 +378,14 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
             "note backup has not been verified; run the local backup tool first",
         );
     }
-    let expected_processooor = match wallet_address(&request.signing_wallet) {
+    let expected_processooor = match account_address(wallet, index) {
         Ok(address) => address,
         Err(e) => return err(-4, e),
     };
     if call.processooor != expected_processooor {
         return err(
             -3,
-            "calldata processooor does not match the signing wallet address",
+            "calldata processooor does not match this account's address",
         );
     }
     let existing_nullifier = match parse_u256(&note.nullifier, "stored nullifier") {
@@ -430,7 +433,6 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     let mut status = WithdrawalStatus {
         note_wallet: wallet.to_string(),
         note_id: id.to_string(),
-        signing_wallet: request.signing_wallet.clone(),
         processooor: format!("{:?}", call.processooor),
         withdrawal_value_wei: call.public_signals[2].to_string(),
         existing_nullifier_hash: as_hex(call.public_signals[1]),
@@ -446,7 +448,6 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
             tx_hash: None,
         },
         approval_action_id: None,
-        approval_ceremony_url: None,
         approval_expires_ms: None,
         settlement_verified: false,
     };
@@ -460,7 +461,7 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
     }
 
     let staged = match sdk::tx_stage(&EvmTransaction {
-        wallet: request.signing_wallet,
+        wallet: wallet.to_string(),
         chain: CHAIN.into(),
         to: format!("{POOL_ETH:?}"),
         value_wei: "0".into(),
@@ -487,10 +488,6 @@ pub fn stage(wallet: &str, id: &str, body: &[u8]) -> DispatchResponse {
         .approval
         .as_ref()
         .map(|value| value.action_id.clone());
-    status.approval_ceremony_url = staged
-        .approval
-        .as_ref()
-        .map(|value| value.ceremony_url.clone());
     status.approval_expires_ms = staged.approval.as_ref().map(|value| value.expires_ms);
     if let Err(e) = notes::store_withdrawal(&status) {
         return err(
@@ -516,6 +513,21 @@ fn stage_private_relay(wallet: &str, id: &str, request: PrivateRelayRequest) -> 
     {
         return err(-3, "amount_wei must be a non-zero decimal integer");
     }
+    match notes::load_private_relay(wallet, id) {
+        Ok(Some(status)) => {
+            if status.replacement_id != request.replacement_id
+                || status.amount_wei != request.amount_wei
+            {
+                return err(
+                    -3,
+                    "a different private relay request already exists for this note",
+                );
+            }
+            return DispatchResponse::Write;
+        }
+        Ok(None) => {}
+        Err(e) => return err(-4, e),
+    }
     let mut note = match notes::load_note(wallet, id) {
         Ok(Some(note)) => note,
         Ok(None) => return err(-1, "no such deposit"),
@@ -536,89 +548,29 @@ fn stage_private_relay(wallet: &str, id: &str, request: PrivateRelayRequest) -> 
     if note.commitment.is_none() || note.label.is_none() || note.value.is_none() {
         return err(-3, "deposit is not fully reconciled");
     }
-    let (mut status, is_new) = match notes::load_private_relay(wallet, id) {
-        Ok(Some(status)) => {
-            if status.replacement_id != request.replacement_id
-                || status.amount_wei != request.amount_wei
-                || status.approval_wallet != request.approval_wallet
-            {
-                return err(-3, "a different private relay request already exists for this note");
-            }
-            if status.status == "destination-ready" {
-                return DispatchResponse::Write;
-            }
-            (status, false)
-        }
-        Ok(None) => (PrivateRelayStatus {
-            note_wallet: wallet.into(),
-            note_id: id.into(),
-            replacement_id: request.replacement_id.clone(),
-            approval_wallet: request.approval_wallet.clone(),
-            amount_wei: request.amount_wei.clone(),
-            status: "awaiting-destination".into(),
-            ceremony_url: None,
-            ceremony_expires_ms: None,
-            next: "Open ceremony_url and enter the withdrawal destination privately, then repeat the identical VFS write.".into(),
-        }, true),
+    let note_value = match parse_u256(note.value.as_deref().expect("checked above"), "note value") {
+        Ok(value) => value,
         Err(e) => return err(-4, e),
     };
-    let input_id = format!("privacy-pools/withdraw/{wallet}/{id}");
-    let mut consume_after_persist = false;
-    match sdk::request_private_input(&PrivateInputRequest {
-        id: input_id.clone(),
-        wallet: wallet.into(),
-        approval_wallet: request.approval_wallet.clone(),
-        title: "Private Privacy Pools withdrawal".into(),
-        prompt: "Enter the Ethereum address that should receive this withdrawal. Bloom will not return it through VFS.".into(),
-        kind: PrivateInputKind::EvmAddress,
-    }) {
-        Ok(PrivateInputOutcome::Pending {
-            ceremony_url,
-            expires_ms,
-        }) => {
-            status.status = "awaiting-destination".into();
-            status.ceremony_url = Some(ceremony_url);
-            status.ceremony_expires_ms = Some(expires_ms);
+    if let Some(amount) = request.amount_wei.as_deref() {
+        let amount = match parse_u256(amount, "amount_wei") {
+            Ok(value) => value,
+            Err(e) => return err(-3, e),
+        };
+        if amount > note_value {
+            return err(-3, "amount_wei exceeds the note value");
         }
-        Ok(PrivateInputOutcome::Ready(recipient)) => {
-            let secret = PrivateRelayRecipient {
-                schema: "bloom.privacy-pools.private-relay-recipient.v1".into(),
-                note_wallet: wallet.into(),
-                note_id: id.into(),
-                replacement_id: request.replacement_id,
-                amount_wei: request.amount_wei,
-                recipient,
-            };
-            if let Err(e) = notes::store_private_recipient(&secret) {
-                return err(-4, format!("store private relay recipient: {e}"));
-            }
-            consume_after_persist = true;
-            status.status = "destination-ready".into();
-            status.ceremony_url = None;
-            status.ceremony_expires_ms = None;
-            status.next = "Run tools/privacy-pools relay-private for this note. The helper reads the destination from the secret store and must not print it.".into();
-        }
-        Err(petal::SdkError::Host(HostStatus::Denied)) => {
-            return err(-2, "private destination ceremony was denied by the host");
-        }
-        Err(e) => return err(-4, format!("private destination ceremony: {}", e.message())),
     }
-    // Claim the public lifecycle key atomically after the host request
-    // succeeds. Repeated identical writes update the same record.
-    let persisted = if is_new {
-        notes::store_private_relay_new(&status)
-    } else {
-        notes::store_private_relay(&status)
+    let status = PrivateRelayStatus {
+            note_wallet: wallet.into(),
+            note_id: id.into(),
+            replacement_id: request.replacement_id,
+            amount_wei: request.amount_wei,
+            status: "awaiting-owner-input".into(),
+            next: "Run tools/privacy-pools relay-private for this note; it opens a local browser form for the destination.".into(),
     };
-    if let Err(e) = persisted {
+    if let Err(e) = notes::store_private_relay_new(&status) {
         return err(-4, e);
-    }
-    // Do not destroy the one-shot host value until both its secret hand-off
-    // and the public lifecycle record are durable. A failed cleanup is safe:
-    // the origin-bound host session expires and the persisted recipient is
-    // idempotent on a repeated identical write.
-    if consume_after_persist && let Err(e) = sdk::consume_private_input(&input_id) {
-        return err(-4, format!("consume private input: {}", e.message()));
     }
     DispatchResponse::Write
 }
@@ -697,7 +649,6 @@ fn promote_replacement(
         spent: false,
         backup_verified: replacement.backup_verified,
         approval_action_id: None,
-        approval_ceremony_url: None,
         approval_expires_ms: None,
     };
     match notes::load_note(&status.note_wallet, &status.replacement_id)? {
@@ -718,7 +669,7 @@ fn reconcile(status: &mut WithdrawalStatus) -> Result<(), String> {
     if status.settlement_verified || status.tx.outbox_id.is_empty() {
         return Ok(());
     }
-    let inspection = sdk::tx_inspect(&status.signing_wallet, CHAIN, &status.tx.outbox_id)
+    let inspection = sdk::tx_inspect(&status.note_wallet, CHAIN, &status.tx.outbox_id)
         .map_err(|e| e.message())?;
     status.tx.tx_hash = inspection.tx_hash.clone();
     match inspection.state.as_str() {
