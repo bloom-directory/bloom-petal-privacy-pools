@@ -23,7 +23,7 @@ petal::route_file!(
         },
         "withdrawal_support": {
             "direct": "validate + live-root check + simulate + Bloom outbox stage + settlement reconciliation",
-            "relayed": "private destination ceremony + signed relayer quote + local proof + Entrypoint.relay + settlement reconciliation",
+            "relayed": "companion-local private destination form + signed relayer quote + local proof + Entrypoint.relay + settlement reconciliation",
             "proving": "local companion tool using @0xbow/privacy-pools-core-sdk@1.4.0 and pinned artifact hashes"
         },
         "sources": [
